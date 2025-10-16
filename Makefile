@@ -48,6 +48,27 @@ $(OBJ_DIR)/%.o: $(SRC_DIR)/%.cpp
 	$(CXX) $(CFLAGS) -c -o $@ $<
 
 
+# === Installation ===
+PREFIX?=${HOME}/opt/bin
+INSTALL_METHOD?=symlink
+
+.PHONY: install
+install: $(EXEC)
+	install -d $(PREFIX)
+ifeq ($(INSTALL_METHOD),symlink)
+	ln -sf $(abspath $(EXEC)) $(PREFIX)/vxdebug
+else ifeq ($(INSTALL_METHOD),copy)
+	cp -f $(abspath $(EXEC)) $(PREFIX)/vxdebug
+else
+	$(error Unknown INSTALL_METHOD '$(INSTALL_METHOD)'. Use 'symlink' or 'copy'.)
+endif
+	@echo "Installed vxdebug to $(PREFIX)/vxdebug"
+
+.PHONY: uninstall
+uninstall:
+	rm -f $(PREFIX)/vxdebug
+	@echo "Uninstalled vxdebug from $(PREFIX)/vxdebug"
+
 .PHONY: test
 test: $(EXEC)
 	$(EXEC) --version
