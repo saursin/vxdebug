@@ -3,6 +3,8 @@
 #include <string>
 #include <vector>
 #include <cstdarg>
+#include <cstdint>
+#include <stdexcept>
 
 std::string lstrip(const std::string &s) {
     size_t start = s.find_first_not_of(" \t\n\r");
@@ -57,4 +59,50 @@ std::string strfmt(const char* fmt, ...) {
     va_end(args);
 
     return std::string(buf.data(), size);
+}
+
+std::string hex2str(uint32_t value, size_t num_prefix, char prefix_char, bool uppercase) {
+    std::string hex = strfmt(uppercase ? "%X" : "%x", value);
+    if (num_prefix > hex.size()) {
+        hex = std::string(num_prefix - hex.size(), prefix_char) + hex;
+    }
+    return hex;
+}
+
+
+// Parses a string of the form "IP:port" into its components.
+// Either/Both IP and port can be omitted to use defaults.
+void parse_tcp_hostportstr(const std::string &str, std::string &ip, uint16_t &port) {
+    size_t colon_pos = str.find(':');
+    if (colon_pos == std::string::npos) {
+        throw std::runtime_error("Invalid TCP address format. Expected <IP>:<port>");
+    }
+
+    if(colon_pos > 0) {
+        // IP part is present
+        
+        // Validate basic IP format (very basic check)
+        size_t dot1 = str.find('.', 0);
+        size_t dot2 = str.find('.', dot1 + 1);
+        size_t dot3 = str.find('.', dot2 + 1);
+        if (dot1 == std::string::npos || dot2 == std::string::npos || dot3 == std::string::npos || dot3 > colon_pos) {
+            throw std::runtime_error("Invalid IP address format");
+        }
+        ip = str.substr(0, colon_pos);
+    }
+    else {
+        ip = "";
+    }
+
+    if(colon_pos + 1 < str.size()) {
+        // Port part is present
+        int port_num = std::stoi(str.substr(colon_pos + 1));
+        if (port_num <= 0 || port_num > 65535) {
+            throw std::runtime_error("Invalid port number. Must be between 1 and 65535");
+        }
+        port = static_cast<uint16_t>(port_num);
+    }
+    else {
+        port = 0; // Indicate no port specified
+    }
 }

@@ -3,7 +3,7 @@
 
 #include "argparse.h"
 #include "logger.h"
-// #include "vxdbg.h"
+#include "vxdebug.h"
 
 #ifndef VXDBG_VERSION
     #define VXDBG_VERSION "v0.1"
@@ -70,12 +70,12 @@ int main(const int argc, char** argv) {
 
     // Create debugger instance
     Logger::ginfo("Starting Vortex Debugger " VXDBG_VERSION);
-    // VortexDebugger debugger;
+    VortexDebugger debugger;
 
     // Execute script if provided
     std::string script = parser.get<std::string>("script");
     if (!script.empty()) {
-        // rc = debugger.execute_script(script);
+        rc = debugger.execute_script(script);
         if (rc != 0) {
             Logger::gerror("Script execution failed with code " + std::to_string(rc));
             return rc;
@@ -84,7 +84,7 @@ int main(const int argc, char** argv) {
     
     // Start interactive CLI unless disabled
     if (!parser.get<bool>("no_cli")) {
-        // rc = debugger.start_cli();
+        rc = debugger.start_cli();
         if (rc != 0) {
             Logger::gerror("CLI exited with code " + std::to_string(rc));
         }

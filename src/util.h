@@ -1,6 +1,7 @@
 #pragma once
 #include <string>
 #include <vector>
+#include <cstdint>
 
 // Return codes
 #define RCODE_OK                 0
@@ -31,3 +32,9 @@ std::vector<std::string> tokenize(const std::string &s, char delim=' ');
 
 // Simple printf-style formatting function
 std::string strfmt(const char* fmt, ...);
+
+// Convert uint32_t -> string, optionally padded with prefix chars.
+std::string hex2str(uint32_t value, size_t num_prefix = 0, char prefix_char = '0', bool uppercase = false);
+
+// Parse a "host:port" string into IP and port components
+void parse_tcp_hostportstr(const std::string &str, std::string &ip, uint16_t &port);
