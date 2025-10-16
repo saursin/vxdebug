@@ -5,7 +5,7 @@ Debugger For Vortex GPGPU
 ```mermaid
 flowchart TD 
     user[👤 User]
-    p1[🌐TCP:3333]
+    p1([🌐TCP:3333])
     gdb["💻 RISC-V GDB<br/>(client)"]
     console[💻 Vxdbg Console]
     subgraph vxdbg[Vortex Debugger]
@@ -17,8 +17,9 @@ flowchart TD
         Df -- "Backend API" --> Db
         Db -- "R/W DMReg" --> Dt
     end
+    style vxdbg fill:#1e1e2f,stroke:#4e9eff,stroke-width:2px,color:white
     
-    p2[🌐TCP:5555]
+    p2([🌐TCP:5555])
     user .-> console -- "vxdbg commands" --> Df
     user .-> gdb --> p1 -- "RSP commands" --> Ds
     Dt -- "Transport API" --> p2
@@ -67,13 +68,16 @@ flowchart TD
 # Prerequisites
 ```bash
 # Install readline (optional)
-sudo apt install libreadline
+sudo apt install libreadline-dev
 ```
 
 # Build/Install Instructions
 ```bash
 # Building the debugger
 make all
+
+# Quick test to print debugger version
+make test
 ```
 - Use `DEBUG=1` to build with debug flags.
 - Use `READLINE=0` to build without readline.

@@ -48,6 +48,10 @@ $(OBJ_DIR)/%.o: $(SRC_DIR)/%.cpp
 	$(CXX) $(CFLAGS) -c -o $@ $<
 
 
+.PHONY: test
+test: $(EXEC)
+	$(EXEC) --version
+
 .PHONY: clean
 clean:
 	rm -f $(OBJ_DIR)/*.o $(EXEC)
