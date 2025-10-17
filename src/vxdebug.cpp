@@ -5,8 +5,11 @@
 #include "backend.h"
 
 #include <sstream>
+
+#ifdef USE_READLINE
 #include <readline/readline.h>
 #include <readline/history.h>
+#endif
 
 #define VXDBG_PROMPT "vxdbg> "
 
@@ -105,22 +108,33 @@ int VortexDebugger::start_cli() {
     std::string prev_input;
 
     while (running_) {
+        std::string input;
+    #ifdef USE_READLINE
         // Read input using readline for better UX
         char* raw_line = readline(ANSI_GRN VXDBG_PROMPT ANSI_RST);
         if (!raw_line) {
             std::cout << std::endl;
             break; // EOF
         }
-
-        std::string input(raw_line);
+        input = std::string(raw_line);
         free(raw_line);
+    #else
+        // Simple getline if readline not available
+        std::cout << ANSI_GRN VXDBG_PROMPT ANSI_RST;
+        if (!std::getline(std::cin, input)) {
+            std::cout << std::endl;
+            break; // EOF
+        }
+    #endif
 
         // preprocess: if input blank, use last command instead
         if(input == "") {
             input = prev_input;
         } else {
             prev_input = input;
+        #ifdef USE_READLINE
             add_history(input.c_str());
+        #endif
         }
 
         prev_input = input;

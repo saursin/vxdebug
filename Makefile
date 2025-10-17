@@ -15,11 +15,22 @@ LIB_SRCS:=$(wildcard $(LIB_SRC_DIR)/*.cpp)
 LIB_OBJS:=$(patsubst $(LIB_SRC_DIR)/%.cpp,$(OBJ_DIR)/lib%.o,$(LIB_SRCS))
 LIB_DEPS:=$(patsubst $(LIB_SRC_DIR)/%.cpp,$(OBJ_DIR)/lib%.d,$(LIB_SRCS))
 
-CFLAGS:=-g -O2 -Wall -Wextra -std=c++17 -I$(LIB_SRC_DIR) -I$(SRC_DIR) -MMD -MP
-LDFLAGS:=-L$(LIB_DIR) -largparse -ltcputils -llogger -lpthread -lreadline
+CFLAGS:=-O2 -Wall -Wextra -std=c++17 -I$(LIB_SRC_DIR) -I$(SRC_DIR) -MMD -MP
+LDFLAGS:=-L$(LIB_DIR) -largparse -ltcputils -llogger -lpthread
 EXEC:=$(BUILD_DIR)/vxdebug
 
 LIBS:= $(LIB_DIR)/libargparse.a $(LIB_DIR)/libtcputils.a $(LIB_DIR)/liblogger.a
+
+USE_READLINE?=1
+ifeq ($(USE_READLINE),1)
+    CFLAGS+= -DUSE_READLINE
+    LDFLAGS+= -lreadline
+endif
+
+DEBUG?=1		# Enable debug by default for development
+ifeq ($(DEBUG),1)
+	CFLAGS+= -g -O0 -DDEBUG
+endif
 
 # Include dependency files if they exist
 -include $(APP_DEPS) $(LIB_DEPS)

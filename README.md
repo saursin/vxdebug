@@ -80,7 +80,7 @@ make all
 make test
 ```
 - Use `DEBUG=1` to build with debug flags.
-- Use `READLINE=0` to build without readline.
+- Use `USE_READLINE=0` to build without readline.
 
 ```bash
 # Install to a specific path (default `$HOME/opt/bin`).
