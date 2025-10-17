@@ -43,10 +43,10 @@ const std::map<LogLevel, std::string> msg_clr_tab = {
 };
 
 
-Logger::Logger(const std::string &prefix, const int debug_thr): 
+Logger::Logger(const std::string &prefix, const int level, const int debug_thr): 
     prefix_(prefix), 
-    verbosity_(g_verbosity_), 
-    debug_threshold_(debug_thr >= 0 ? debug_thr : g_debug_threshold_) 
+    level_(static_cast<LogLevel>(level >= 0 ? level : static_cast<int>(LOG_INFO))), 
+    debug_threshold_(debug_thr >= 0 ? debug_thr : g_debug_threshold_)
 {}
 
 void Logger::set_output_file(const std::string& path) {
@@ -65,15 +65,15 @@ void Logger::close_output_file() {
 // === Core logic ===
 void Logger::log_internal(const Logger* self, LogLevel lvl,
                           const std::string& msg, int threshold) {
-    const int verbosity  = self ? self->verbosity_ : g_verbosity_;
+    const int level      = self ? static_cast<int>(self->level_) : static_cast<int>(g_level_);
     const int debug_thr  = self ? self->debug_threshold_ : g_debug_threshold_;
     const std::string& prefix = (self && !self->prefix_.empty()) ? self->prefix_ : g_prefix_;
 
     bool should_print = false;
     if (lvl >= LOG_DEBUG)
-        should_print = (verbosity >= threshold && threshold >= debug_thr);
+        should_print = (level >= static_cast<int>(lvl) && threshold <= debug_thr);
     else
-        should_print = (verbosity >= lvl);
+        should_print = (level >= static_cast<int>(lvl));
 
     if (!should_print)
         return;

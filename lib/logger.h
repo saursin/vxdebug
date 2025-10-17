@@ -26,12 +26,12 @@ enum LogLevel {
 
 class Logger {
 public:
-    Logger(const std::string &prefix = "", const int debug_thr = -1);
+    Logger(const std::string &prefix = "", const int level = static_cast<int>(LOG_INFO), const int debug_thr = -1);
     ~Logger() = default;
 
     // === Global configuration ===
     static void set_global_prefix(const std::string& prefix) { g_prefix_ = prefix; }
-    static void set_global_verbosity(int level)              { g_verbosity_ = level; }
+    static void set_global_level(LogLevel level)             { g_level_ = level; }
     static void set_global_debug_threshold(int thr)          { g_debug_threshold_ = thr; }
     static void set_color_enabled(bool enable)               { g_color_enabled_ = enable; }
     static void set_output_file(const std::string& path);
@@ -50,19 +50,21 @@ public:
     static void gdebug(const std::string& msg, int threshold = 3);
 
 private:
-    // Per-instance config
-    std::string prefix_;
-    int verbosity_;
-    int debug_threshold_;
-
     // Shared global config
     static inline std::string g_prefix_ = "";
-    static inline int g_verbosity_ = LOG_INFO;
-    static inline int g_debug_threshold_ = 3;
+    static inline LogLevel g_level_ = LOG_INFO;
+    static inline int g_debug_threshold_ = LOG_DEBUG;
     static inline bool g_color_enabled_ = true;
+    
     static inline std::mutex g_mutex_;
     static inline std::ofstream g_file_;
 
+    // Per-instance config
+    std::string prefix_;
+    LogLevel level_;
+    int debug_threshold_;
+
+    // Internal logging function
     static void log_internal(const Logger* self, LogLevel lvl,
                              const std::string& msg, int threshold = 3);
 };
