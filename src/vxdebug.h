@@ -27,6 +27,7 @@ public:
     int cmd_source(const std::vector<std::string>& args);
     int cmd_transport(const std::vector<std::string>& args);
     int cmd_reset(const std::vector<std::string>& args);
+    int cmd_info(const std::vector<std::string>& args);
 
 private:
     Logger *log_;

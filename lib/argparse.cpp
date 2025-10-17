@@ -1,14 +1,40 @@
 #include "argparse.h"
-#include "logger.h"
+#include <iostream>
 #include <cstdio>
 #include <cstdlib>
 #include <iostream>
 #include <stdexcept>
+#include <algorithm>
 
 using namespace ArgParse;
 
 ////////////////////////////////////////////////////////////////////////////////
 // Helpers
+
+// Check if a string is a negative number (starts with - followed by digits)
+bool is_negative_number(const std::string& str) {
+    if (str.length() < 2 || str[0] != '-') {
+        return false;
+    }
+    
+    // Check if the rest is a valid number
+    for (size_t i = 1; i < str.length(); i++) {
+        if (!std::isdigit(str[i]) && str[i] != '.') {
+            return false;
+        }
+    }
+    
+    return true;
+}
+
+// Check if value is in allowed choices
+bool is_valid_choice(const std::string& value, const std::vector<std::string>& choices) {
+    if (choices.empty()) {
+        return true;  // No choices restriction
+    }
+    
+    return std::find(choices.begin(), choices.end(), value) != choices.end();
+}
 
 // Convert alias to key
 // '--opt-flat' -> 'opt_flat'
@@ -111,7 +137,7 @@ ArgumentParser::ArgumentParser(const std::string& prog_name, const std::string& 
 
 
 void ArgumentParser::add_argument(const std::vector<std::string>& aliases, const std::string& help, ArgType_t type, 
-    const std::string& defaultval, bool required, const std::string& key) {
+    const std::string& defaultval, bool required, const std::string& key, const std::vector<std::string>& choices, const std::string& metavar) {
     
     if(aliases.size() == 0) {
         throw ArgParseException("No aliases provided");
@@ -128,8 +154,31 @@ void ArgumentParser::add_argument(const std::vector<std::string>& aliases, const
     arg.required = required;
     arg.defaultval.type = UNK;  // Initialize to unknown type
     arg.key = key;
-    if (arg.key == "") {        // convert the last alias as the key
-        arg.key = alias2key(aliases[aliases.size()-1]);
+    
+    // Detect if this is a positional argument (Python-style)
+    // Positional arguments have aliases that don't start with '-'
+    arg.is_positional = true;
+    for (const auto& alias : aliases) {
+        if (alias.length() > 0 && alias[0] == '-') {
+            arg.is_positional = false;
+            break;
+        }
+    }
+    
+    if (arg.key == "") {        // convert an alias as the key
+        if (arg.is_positional) {
+            // For positional arguments, use the alias directly as the key
+            arg.key = aliases[0];
+        } else {
+            // For optional arguments, prefer the longest alias (usually the --long form)
+            std::string best_alias = aliases[0];
+            for (const auto& alias : aliases) {
+                if (alias.length() > best_alias.length()) {
+                    best_alias = alias;
+                }
+            }
+            arg.key = alias2key(best_alias);
+        }
     }
     
 
@@ -157,7 +206,18 @@ void ArgumentParser::add_argument(const std::vector<std::string>& aliases, const
     else {
         arg.defaultval.type = UNK;
     }
+    
+    // Set choices for validation
+    arg.choices = choices;
+    
+    // Set metavar
+    arg.metavar = metavar;
+    
+    // Add to appropriate list
     arg_list_.push_back(arg);
+    if (arg.is_positional) {
+        pos_arg_list_.push_back(arg);
+    }
 }
 
 
@@ -219,84 +279,146 @@ int ArgumentParser::parse_args(const std::vector<std::string>& args) {
         if (!args_.empty())
             args_.erase(args_.begin()); // remove program name
 
+        // Check for help first, before any parsing
+        for (const auto& arg : args_) {
+            if (arg == "-h" || arg == "--help") {
+                parsed_args_["help"].type = BOOL;
+                parsed_args_["help"].value = true;
+                print_help();
+                return 1;
+            }
+        }
+
+        // Sequential parsing like Python's argparse
+        std::vector<std::string> positional_values;
+        
         size_t i = 0;
         while(i < args_.size()) {
             auto arg = args_[i];
             i++;
 
-            // Check for positional argument
-            if (arg[0] != '-') {
-                parsed_pos_args_.push_back(arg);
-                continue;
-            }
+            // Check if this is an optional argument (starts with - but not a negative number)
+            if (arg[0] == '-' && !is_negative_number(arg)) {
+                // Find matching optional argument
+                bool found = false;
+                Argument_t *argp = nullptr;
+                
+                for (auto &a: arg_list_) {
+                    if (a.is_positional) continue;  // Skip positional arguments
+                    for (auto alias: a.aliases) {
+                        if (alias == arg) {
+                            found = true;
+                            argp = &a;
+                            break;
+                        }
+                    }
+                    if (found) break;
+                }
 
-            // Check for match
-            bool found = false;
-            Argument_t *argp=nullptr;
-            
-            for (auto &a: arg_list_) {
-                for (auto alias: a.aliases) {
-                    if (alias == arg) {
-                        found = true;
-                        argp = &a;
-                        break;
+                if (!found) {
+                    throw ArgParseException("Unknown argument: " + arg);
+                }
+
+                // Handle optional argument
+                if (argp->type == BOOL) {
+                    parsed_args_[argp->key].type = BOOL;
+                    parsed_args_[argp->key].value = true;
+                }
+                else {
+                    // Need next argument as value
+                    if (i >= args_.size()) {
+                        throw ArgParseException("Missing value for argument: " + arg);
+                    }
+                    const std::string& value = args_[i];
+                    i++;
+                    
+                    parsed_args_[argp->key].type = argp->type;
+                    switch(argp->type) {
+                        case INT:
+                            if (!is_valid_type(value, INT)) {
+                                throw ArgParseException("Invalid integer value for " + arg + ": " + value);
+                            }
+                            parsed_args_[argp->key].value = std::stoi(value);
+                            break;
+                        case FLOAT:
+                            if (!is_valid_type(value, FLOAT)) {
+                                throw ArgParseException("Invalid float value for " + arg + ": " + value);
+                            }
+                            parsed_args_[argp->key].value = strtof(value.c_str(), nullptr);
+                            break;
+                        case STR:
+                            parsed_args_[argp->key].value = value;
+                            break;
+                        default:
+                            throw ArgParseException("Unknown argument type for " + arg);
+                    }
+                    
+                    // Validate choices
+                    if (!is_valid_choice(value, argp->choices)) {
+                        std::string choices_str = "";
+                        for (size_t j = 0; j < argp->choices.size(); j++) {
+                            if (j > 0) choices_str += ", ";
+                            choices_str += "'" + argp->choices[j] + "'";
+                        }
+                        throw ArgParseException("Invalid choice for " + arg + ": '" + value + "' (choose from " + choices_str + ")");
                     }
                 }
-                if (found) break;
+            } else {
+                // This is a positional argument
+                positional_values.push_back(arg);
+                parsed_pos_args_.push_back(arg);  // For backward compatibility
             }
+        }
+        
+        // Assign positional arguments to their defined parameters
+        for (size_t pos_idx = 0; pos_idx < pos_arg_list_.size(); pos_idx++) {
+            const auto& pos_arg = pos_arg_list_[pos_idx];
+            if (pos_idx < positional_values.size()) {
+                // Assign the positional value
+                const std::string& value = positional_values[pos_idx];
+                parsed_args_[pos_arg.key].type = pos_arg.type;
+                
+                switch(pos_arg.type) {
+                    case INT:
+                        if (!is_valid_type(value, INT)) {
+                            throw ArgParseException("Invalid integer value for " + pos_arg.key + ": " + value);
+                        }
+                        parsed_args_[pos_arg.key].value = std::stoi(value);
+                        break;
+                    case FLOAT:
+                        if (!is_valid_type(value, FLOAT)) {
+                            throw ArgParseException("Invalid float value for " + pos_arg.key + ": " + value);
+                        }
+                        parsed_args_[pos_arg.key].value = strtof(value.c_str(), nullptr);
+                        break;
+                    case STR:
+                        parsed_args_[pos_arg.key].value = value;
+                        break;
+                    case BOOL:
+                        if (!is_valid_type(value, BOOL)) {
+                            throw ArgParseException("Invalid boolean value for " + pos_arg.key + ": " + value);
+                        }
+                        parsed_args_[pos_arg.key].value = (value == "true" || value == "1");
+                        break;
+                    default:
+                        throw ArgParseException("Unknown argument type for " + pos_arg.key);
+                }
+                
+                // Validate choices for positional arguments
+                if (!is_valid_choice(value, pos_arg.choices)) {
+                    std::string choices_str = "";
+                    for (size_t j = 0; j < pos_arg.choices.size(); j++) {
+                        if (j > 0) choices_str += ", ";
+                        choices_str += "'" + pos_arg.choices[j] + "'";
+                    }
+                    throw ArgParseException("Invalid choice for " + pos_arg.key + ": '" + value + "' (choose from " + choices_str + ")");
+                }
+            } else if (pos_arg.required) {
+                throw ArgParseException("Missing required positional argument: " + pos_arg.key);
+            }
+        }
 
-            if (!found) {
-                throw ArgParseException("Unknown argument: " + arg);
-            }
-
-        if (argp->type == BOOL) {
-            parsed_args_[argp->key].type = BOOL;
-            parsed_args_[argp->key].value = true;
-            continue;
-        }
-        else if (argp->type == INT) {
-            if (i >= args_.size()) {
-                throw ArgParseException("Missing value for argument: " + arg);
-            }
-            if (!is_valid_type(args_[i], INT)) {
-                throw ArgParseException("Invalid value for argument " + arg + ": " + args_[i]);
-            }
-            parsed_args_[argp->key].type = INT;
-            parsed_args_[argp->key].value = std::stoi(args_[i]);
-            i++;
-        }
-        else if (argp->type == FLOAT) {
-            if (i >= args_.size()) {
-                throw ArgParseException("Missing value for argument: " + arg);
-            }
-            if (!is_valid_type(args_[i], FLOAT)) {
-                throw ArgParseException("Invalid value for argument " + arg + ": " + args_[i]);
-            }
-            parsed_args_[argp->key].type = FLOAT;
-            parsed_args_[argp->key].value = strtof(args_[i].c_str(), nullptr);
-            i++;
-        }
-        else if (argp->type == STR) {
-            if (i >= args_.size()) {
-                throw ArgParseException("Missing value for argument: " + arg);
-            }
-            if (!is_valid_type(args_[i], STR)) {
-                throw ArgParseException("Invalid value for argument " + arg + ": " + args_[i]);
-            }
-            parsed_args_[argp->key].type = STR;
-            parsed_args_[argp->key].value = args_[i];
-            i++;
-        }
-        else {
-            throw ArgParseException("Unknown argument type: " + std::to_string(argp->type));
-        }
-        }
-
-        // print help message if requested
-        if (std::get<bool>(parsed_args_["help"].value)) {
-            print_help();
-            return 1;
-        }
+        // Help is handled earlier in parsing
 
         // Check for required arguments
         for (const auto &a: arg_list_) {
@@ -308,7 +430,7 @@ int ArgumentParser::parse_args(const std::vector<std::string>& args) {
         return 0;
     }
     catch (const ArgParseException& e) {
-        Logger::gerror("Argument parsing error: " + std::string(e.what()));
+        std::cerr << "Argument parsing error: " << e.what() << std::endl;
         return -1;
     }
 }
@@ -344,17 +466,56 @@ void ArgumentParser::print_help() const {
 
     printf("\nOptions:\n");
     for (const auto& a: arg_list_){
-        if (a.type == BOOL) {
-            printf("  ");
-            for(size_t i=0; i<a.aliases.size(); i++) {
-                printf("%s%s", a.aliases[i].c_str(), (i == a.aliases.size()-1) ? "  ": ", ");
+        if (a.is_positional) continue;  // Skip positional args in options section
+        
+        printf("  ");
+        for(size_t i=0; i<a.aliases.size(); i++) {
+            printf("%s", a.aliases[i].c_str());
+            if (a.type != BOOL) {
+                // Show metavar or generate default
+                std::string meta = a.metavar;
+                if (meta.empty()) {
+                    switch(a.type) {
+                        case INT: meta = "N"; break;
+                        case FLOAT: meta = "F"; break;
+                        case STR: meta = "STR"; break;
+                        default: meta = "VALUE"; break;
+                    }
+                }
+                printf(" %s", meta.c_str());
             }
-            printf("  %s\n", a.help.c_str());
+            if (i < a.aliases.size() - 1) printf(", ");
         }
-        else {
-            printf("  %s: %s\n", a.key.c_str(), a.help.c_str());
-            for (const auto& alias: a.aliases) {
-                printf("    %s\n", alias.c_str());
+        printf("\n    %s\n", a.help.c_str());
+        
+        // Show choices if available
+        if (!a.choices.empty()) {
+            printf("    choices: {");
+            for (size_t i = 0; i < a.choices.size(); i++) {
+                printf("'%s'%s", a.choices[i].c_str(), (i < a.choices.size() - 1) ? ", " : "");
+            }
+            printf("}\n");
+        }
+    }
+    
+    // Show positional arguments
+    bool has_positional = false;
+    for (const auto& a: arg_list_) {
+        if (a.is_positional) {
+            if (!has_positional) {
+                printf("\nPositional arguments:\n");
+                has_positional = true;
+            }
+            std::string meta = a.metavar.empty() ? a.key : a.metavar;
+            printf("  %s\n    %s\n", meta.c_str(), a.help.c_str());
+            
+            // Show choices if available
+            if (!a.choices.empty()) {
+                printf("    choices: {");
+                for (size_t i = 0; i < a.choices.size(); i++) {
+                    printf("'%s'%s", a.choices[i].c_str(), (i < a.choices.size() - 1) ? ", " : "");
+                }
+                printf("}\n");
             }
         }
     }

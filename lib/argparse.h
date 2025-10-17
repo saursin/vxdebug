@@ -54,7 +54,10 @@ struct Argument_t {
     std::string key     = "";           // Internal key name
     std::string help    = "";           // Help text
     bool required       = false;        // Whether argument is required
+    bool is_positional  = false;        // Whether this is a positional argument
     ArgVal_t defaultval = {UNK, false};    // Default value (initialized to UNK type with false)
+    std::vector<std::string> choices;   // Allowed values (empty = any value allowed)
+    std::string metavar = "";           // Display name for help (empty = auto-generate)
 };
 
 /**
@@ -87,23 +90,23 @@ bool is_valid_type(const std::string& str, ArgType_t type);
  * @brief Main argument parser class
  * 
  * Provides a Python-argparse-like interface for parsing command-line arguments.
- * Supports multiple argument types, default values, required arguments, and
- * automatic help generation.
+ * Supports multiple argument types, default values, required arguments, choices
+ * validation, custom metavar display, and automatic help generation.
  * 
  * @example
  * ```cpp
  * ArgParse::ArgumentParser parser("myapp", "My application");
  * parser.add_argument({"-v", "--verbose"}, "Enable verbose output", ArgParse::BOOL);
  * parser.add_argument({"-f", "--file"}, "Input file", ArgParse::STR, "", true);
+ * parser.add_argument({"mode"}, "Operation mode", ArgParse::STR, "", true, "", {"read", "write"});
  * 
  * if (parser.parse_args(argc, argv) != 0) {
  *     return 1;
  * }
  * 
- * auto args = parser.get_opt_args();
- * if (std::get<bool>(args["verbose"].value)) {
- *     std::cout << "Verbose mode enabled\n";
- * }
+ * bool verbose = parser.get<bool>("verbose");
+ * std::string file = parser.get<std::string>("file");
+ * std::string mode = parser.get<std::string>("mode");
  * ```
  */
 class ArgumentParser {
@@ -113,9 +116,10 @@ private:
     std::string epilog_;        ///< Additional help text
     
     std::vector<Argument_t>         arg_list_;          ///< List of defined arguments
+    std::vector<Argument_t>         pos_arg_list_;      ///< List of positional arguments (for ordering)
     std::vector<std::string>        args_;              ///< Raw command-line arguments
-    std::map<std::string, ArgVal_t> parsed_args_;       ///< Parsed optional arguments
-    std::vector<std::string>        parsed_pos_args_;   ///< Parsed positional arguments
+    std::map<std::string, ArgVal_t> parsed_args_;       ///< Parsed arguments (both optional and positional)
+    std::vector<std::string>        parsed_pos_args_;   ///< Raw positional arguments (for backward compatibility)
 
 public:
     /**
@@ -141,6 +145,8 @@ public:
      * @param defaultval Default value as string
      * @param required Whether this argument is required
      * @param key Custom internal key name (auto-generated if empty)
+     * @param choices Allowed values (empty = any value allowed)
+     * @param metavar Display name for help (empty = auto-generate)
      * 
      * @throws ArgParseException if aliases is empty or invalid
      */
@@ -149,7 +155,9 @@ public:
                       ArgType_t type = BOOL, 
                       const std::string& defaultval = "", 
                       bool required = false, 
-                      const std::string& key = "");
+                      const std::string& key = "",
+                      const std::vector<std::string>& choices = {},
+                      const std::string& metavar = "");
 
     /**
      * @brief Parse command-line arguments

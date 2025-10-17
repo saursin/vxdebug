@@ -26,6 +26,7 @@ VortexDebugger::VortexDebugger():
     register_command("transport", {"t"},         "Set backend transport", &VortexDebugger::cmd_transport);
     register_command("source",    {"src"},       "Execute commands from a script file", &VortexDebugger::cmd_source);
     register_command("reset",     {"R"},         "Reset the target system", &VortexDebugger::cmd_reset);
+    register_command("info",      {"i"},         "Display information about the target", &VortexDebugger::cmd_info);
 }
 
 VortexDebugger::~VortexDebugger() {
@@ -199,10 +200,7 @@ int VortexDebugger::cmd_help(const std::vector<std::string>& args) {
                 }
                 cmd_display += ")";
             }
-            
-            char buffer[256];
-            snprintf(buffer, sizeof(buffer), "  %-20s - %s\n", cmd_display.c_str(), cmd_info.description.c_str());
-            out += buffer;
+            out += strfmt("  %-20s - %s\n", cmd_display.c_str(), cmd_info.description.c_str());
         }
         
         log_->info("Available commands:\n" + out);
@@ -212,7 +210,7 @@ int VortexDebugger::cmd_help(const std::vector<std::string>& args) {
         const std::string& cmd = args[1];
 
         // If the command is not found, log an error
-        if (execute_command(cmd, {"--help"}) == -1) {
+        if (execute_command(cmd, {cmd, "--help"}) == -1) {
             log_->error("No help available for command: " + cmd);
         }
     } else {
@@ -231,7 +229,7 @@ int VortexDebugger::cmd_exit(const std::vector<std::string>& args) {
 
 int VortexDebugger::cmd_source(const std::vector<std::string>& args) {
     ArgParse::ArgumentParser parser("source", "Execute commands from a script file");
-    parser.add_argument({"script_file"}, "Path to script file", ArgParse::STR, "");
+    parser.add_argument({"script_file"}, "Path to script file", ArgParse::STR, "", true);
     int rc = parser.parse_args(args);
     if (rc != 0) {return rc;}
 
@@ -278,7 +276,7 @@ int VortexDebugger::cmd_transport(const std::vector<std::string>& args) {
 
 int VortexDebugger::cmd_reset(const std::vector<std::string>& args) {
     ArgParse::ArgumentParser parser("reset", "Reset the target system");
-    parser.add_argument({"-h", "--halt"}, "Halt all warps after reset", ArgParse::BOOL, "false");
+    parser.add_argument({"-H", "--halt"}, "Halt all warps after reset", ArgParse::BOOL, "false");
     int rc = parser.parse_args(args);
     if (rc != 0) {return rc;}
 
@@ -286,5 +284,31 @@ int VortexDebugger::cmd_reset(const std::vector<std::string>& args) {
     
     log_->info("Resetting target" + std::string(halt_warps ? " and halting warps" : ""));    
     backend_->reset(halt_warps);
+    return 0;
+}
+
+int VortexDebugger::cmd_info(const std::vector<std::string>& args) {
+    ArgParse::ArgumentParser parser("info", "Display information about the target");
+    parser.add_argument({"info_type"}, "Type of information to display", ArgParse::STR, "", true, "", {"warps"});
+    int rc = parser.parse_args(args);
+    if (rc != 0) {return rc;}
+
+    const std::string& info_type = parser.get<std::string>("info_type");
+
+    if (info_type == "warps") {
+        log_->info("Retrieving warp status...");
+        bool all_halted = backend_->all_halted();
+        bool any_halted = backend_->any_halted();
+        bool all_running = backend_->all_running();
+        bool any_running = backend_->any_running();
+
+        std::string status = "Warp Status:\n";
+        status += "  All Halted: " + std::string(all_halted ? "Yes" : "No") + "\n";
+        status += "  Any Halted: " + std::string(any_halted ? "Yes" : "No") + "\n";
+        status += "  All Running: " + std::string(all_running ? "Yes" : "No") + "\n";
+        status += "  Any Running: " + std::string(any_running ? "Yes" : "No") + "\n";
+        log_->info(status);
+    }
+
     return 0;
 }
