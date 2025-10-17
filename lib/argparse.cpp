@@ -116,9 +116,10 @@ void ArgumentParser::add_argument(const std::vector<std::string>& aliases, const
         throw ArgParseException("No aliases provided");
     }
 
-    if (required && defaultval != "")
+    if (required && defaultval != "") {
         throw ArgParseException("Argument cannot be both required and have a default value: " + key);
-    
+    }
+
     Argument_t arg;
     arg.aliases = aliases;
     arg.help = help;
@@ -160,16 +161,23 @@ void ArgumentParser::add_argument(const std::vector<std::string>& aliases, const
 
 
 int ArgumentParser::parse_args(int argc, char **argv) {
+    std::vector<std::string> args;
+    for (int i = 0; i < argc; i++) {
+        args.push_back(std::string(argv[i]));
+    }
+    return parse_args(args);
+}
+
+int ArgumentParser::parse_args(const std::vector<std::string>& args) {
+    // TODO: Need to check alias collisions
+
     args_.clear();
+    args_ = args;   // copy input args
+
     parsed_args_.clear();
     parsed_pos_args_.clear();
 
     try {
-        // Add args
-        for(int i=0; i<argc; i++) {
-            args_.push_back(argv[i]);
-        }
-
         // Take program name from args if not set
         if (prog_name_.size() == 0) {
             prog_name_ = args_[0];
@@ -303,6 +311,7 @@ int ArgumentParser::parse_args(int argc, char **argv) {
         return -1;
     }
 }
+
 void ArgumentParser::print_args() const {
     printf("Args:\n");
     for (const auto &k: parsed_args_){

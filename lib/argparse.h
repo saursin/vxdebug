@@ -162,6 +162,7 @@ public:
      * help display automatically.
      */
     int parse_args(int argc, char** argv);
+    int parse_args(const std::vector<std::string>& args);
 
     /**
      * @brief Get parsed optional arguments
