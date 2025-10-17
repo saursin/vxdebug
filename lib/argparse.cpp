@@ -5,6 +5,7 @@
 #include <iostream>
 #include <stdexcept>
 #include <algorithm>
+#include <set>
 
 using namespace ArgParse;
 
@@ -244,6 +245,9 @@ int ArgumentParser::parse_args(const std::vector<std::string>& args) {
             prog_name_ = args_[0];
         }
 
+        // Track which arguments were provided (not just initialized)
+        std::set<std::string> provided_args;
+        
         // add bool args and set default values
         for (auto &a: arg_list_) {
             if (a.type == BOOL) {
@@ -255,6 +259,7 @@ int ArgumentParser::parse_args(const std::vector<std::string>& args) {
                 // Non-BOOL args with explicit defaults
                 parsed_args_[a.key].type = a.type;
                 parsed_args_[a.key] = a.defaultval;
+                provided_args.insert(a.key);  // Defaults count as provided
             }
             else {
                 // Non-BOOL args without defaults - add with appropriate empty values
@@ -323,6 +328,7 @@ int ArgumentParser::parse_args(const std::vector<std::string>& args) {
                 if (argp->type == BOOL) {
                     parsed_args_[argp->key].type = BOOL;
                     parsed_args_[argp->key].value = true;
+                    provided_args.insert(argp->key);
                 }
                 else {
                     // Need next argument as value
@@ -352,6 +358,9 @@ int ArgumentParser::parse_args(const std::vector<std::string>& args) {
                         default:
                             throw ArgParseException("Unknown argument type for " + arg);
                     }
+                    
+                    // Mark as provided
+                    provided_args.insert(argp->key);
                     
                     // Validate choices
                     if (!is_valid_choice(value, argp->choices)) {
@@ -404,6 +413,9 @@ int ArgumentParser::parse_args(const std::vector<std::string>& args) {
                         throw ArgParseException("Unknown argument type for " + pos_arg.key);
                 }
                 
+                // Mark positional argument as provided
+                provided_args.insert(pos_arg.key);
+                
                 // Validate choices for positional arguments
                 if (!is_valid_choice(value, pos_arg.choices)) {
                     std::string choices_str = "";
@@ -422,7 +434,7 @@ int ArgumentParser::parse_args(const std::vector<std::string>& args) {
 
         // Check for required arguments
         for (const auto &a: arg_list_) {
-            if (a.required && parsed_args_.find(a.key) == parsed_args_.end()) {
+            if (a.required && provided_args.find(a.key) == provided_args.end()) {
                 throw ArgParseException("Required argument missing: " + a.key);
             }
         }
