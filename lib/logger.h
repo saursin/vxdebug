@@ -7,8 +7,12 @@
 #define ANSI_RST "\033[0m"
 #define ANSI_GRY "\033[90m"
 #define ANSI_CYN "\033[36m"
+#define ANSI_BLU "\033[34m"
 #define ANSI_YLW "\033[33m"
 #define ANSI_RED "\033[31m"
+#define ANSI_WHT "\033[97m"
+#define ANSI_DIM "\033[2m"
+#define ANSI_BLD "\033[1m"
 
 enum LogLevel {
     LOG_ERROR  = 0,
@@ -26,7 +30,7 @@ enum LogLevel {
 
 class Logger {
 public:
-    Logger(const std::string &prefix = "", const int level = static_cast<int>(LOG_INFO), const int debug_thr = -1);
+    Logger(const std::string &prefix = "", const int debug_thr = -1);
     ~Logger() = default;
 
     // === Global configuration ===
@@ -41,13 +45,13 @@ public:
     void error(const std::string& msg) const;
     void warn (const std::string& msg) const;
     void info (const std::string& msg) const;
-    void debug(const std::string& msg, int threshold = 3) const;
+    void debug(const std::string& msg, int threshold = -1) const;
 
     // === Global logging (prefixed with 'g') ===
     static void gerror(const std::string& msg);
     static void gwarn (const std::string& msg);
     static void ginfo (const std::string& msg);
-    static void gdebug(const std::string& msg, int threshold = 3);
+    static void gdebug(const std::string& msg, int threshold = -1);
 
 private:
     // Shared global config

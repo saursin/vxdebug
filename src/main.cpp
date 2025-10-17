@@ -55,7 +55,9 @@ int main(const int argc, char** argv) {
     if (parser.get<bool>("no_color")) {
         Logger::set_color_enabled(false);
     }
-    Logger::set_global_level(static_cast<LogLevel>(parser.get<int>("verbose")));
+    int verbosity = parser.get<int>("verbose");
+    Logger::set_global_level(static_cast<LogLevel>(verbosity));
+    Logger::set_global_debug_threshold(verbosity);
 
     std::string log_file = parser.get<std::string>("log");
     if (!log_file.empty()) {
@@ -68,26 +70,31 @@ int main(const int argc, char** argv) {
         std::cout << ANSI_YLW << banner << ANSI_RST;
     }
 
-    // Create debugger instance
-    Logger::ginfo("Starting Vortex Debugger " VXDBG_VERSION);
-    VortexDebugger debugger;
+    try {
+        // Create debugger instance
+        Logger::ginfo("Starting Vortex Debugger " VXDBG_VERSION);
+        VortexDebugger debugger;
 
-    // Execute script if provided
-    std::string script = parser.get<std::string>("script");
-    if (!script.empty()) {
-        rc = debugger.execute_script(script);
-        if (rc != 0) {
-            Logger::gerror("Script execution failed with code " + std::to_string(rc));
-            return rc;
+        // Execute script if provided
+        std::string script = parser.get<std::string>("script");
+        if (!script.empty()) {
+            rc = debugger.execute_script(script);
+            if (rc != 0) {
+                Logger::gerror("Script execution failed with code " + std::to_string(rc));
+                return rc;
+            }
         }
-    }
-    
-    // Start interactive CLI unless disabled
-    if (!parser.get<bool>("no_cli")) {
-        rc = debugger.start_cli();
-        if (rc != 0) {
-            Logger::gerror("CLI exited with code " + std::to_string(rc));
+        
+        // Start interactive CLI unless disabled or exited from script
+        if (!parser.get<bool>("no_cli") && debugger.get_state() != EXIT) {
+            rc = debugger.start_cli();
+            if (rc != 0) {
+                Logger::gerror("CLI exited with code " + std::to_string(rc));
+            }
         }
+    } catch (const std::exception& e) {
+        // Catch-all for unexpected errors
+        Logger::gerror("Fatal error: " + std::string(e.what()));
     }
     return rc;
 }

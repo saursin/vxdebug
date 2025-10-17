@@ -9,6 +9,7 @@ class VortexDebugger;
 class Logger;
 
 typedef int (VortexDebugger::*CommandHandler_t)(const std::vector<std::string>&);
+enum VxDbgState_t { STOPPED, RUNNING, EXIT };
 
 class VortexDebugger {
 public:
@@ -18,6 +19,7 @@ public:
     int execute_command(const std::string &cmd, const std::vector<std::string>& args);
     int execute_script(const std::string &script);
     int start_cli();
+    VxDbgState_t get_state() const { return running_; }
 
     // command handlers
     int cmd_help(const std::vector<std::string>& args);
@@ -29,7 +31,7 @@ public:
 private:
     Logger *log_;
     Backend *backend_;
-    bool running_ = false;
+    VxDbgState_t running_ = STOPPED;
 
     // Helper function to register commands and aliases
     void register_command(const std::string& primary_name, 

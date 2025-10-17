@@ -1,3 +1,6 @@
+# Default target - must be first
+.DEFAULT_GOAL := all
+
 BUILD_DIR?=build
 LIB_DIR:=$(BUILD_DIR)/lib
 OBJ_DIR:=$(BUILD_DIR)/obj
@@ -31,9 +34,6 @@ DEBUG?=1		# Enable debug by default for development
 ifeq ($(DEBUG),1)
 	CFLAGS+= -g -O0 -DDEBUG
 endif
-
-# Include dependency files if they exist
--include $(APP_DEPS) $(LIB_DEPS)
 
 .PHONY: all
 all: lib debugger
@@ -96,4 +96,7 @@ clean:
 .PHONY: clean-all
 clean-all: clean
 	rm -f $(LIB_DIR)/*.a
+
+# Include dependency files if they exist (at the end to avoid interfering with default target)
+-include $(APP_DEPS) $(LIB_DEPS)
 

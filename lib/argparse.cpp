@@ -1,4 +1,5 @@
 #include "argparse.h"
+#include "logger.h"
 #include <cstdio>
 #include <cstdlib>
 #include <iostream>
@@ -307,7 +308,7 @@ int ArgumentParser::parse_args(const std::vector<std::string>& args) {
         return 0;
     }
     catch (const ArgParseException& e) {
-        fprintf(stderr, "ArgParse error: %s\n", e.what());
+        Logger::gerror("Argument parsing error: " + std::string(e.what()));
         return -1;
     }
 }

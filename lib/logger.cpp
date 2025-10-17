@@ -1,7 +1,7 @@
 #include "logger.h"
 #include <map>
 
-const std::string prefix_clr = ANSI_CYN;
+const std::string prefix_clr = ANSI_GRY;
 
 const std::map<LogLevel, std::string> tag_clr_tab = {
     {LOG_ERROR, ANSI_RED},
@@ -43,9 +43,9 @@ const std::map<LogLevel, std::string> msg_clr_tab = {
 };
 
 
-Logger::Logger(const std::string &prefix, const int level, const int debug_thr): 
+Logger::Logger(const std::string &prefix, const int debug_thr): 
     prefix_(prefix), 
-    level_(static_cast<LogLevel>(level >= 0 ? level : static_cast<int>(LOG_INFO))), 
+    level_(LOG_INFO),  // Default level, will be overridden by global level
     debug_threshold_(debug_thr >= 0 ? debug_thr : g_debug_threshold_)
 {}
 
@@ -65,15 +65,19 @@ void Logger::close_output_file() {
 // === Core logic ===
 void Logger::log_internal(const Logger* self, LogLevel lvl,
                           const std::string& msg, int threshold) {
-    const int level      = self ? static_cast<int>(self->level_) : static_cast<int>(g_level_);
+    const int level      = static_cast<int>(g_level_);  // Always use global level
     const int debug_thr  = self ? self->debug_threshold_ : g_debug_threshold_;
     const std::string& prefix = (self && !self->prefix_.empty()) ? self->prefix_ : g_prefix_;
 
     bool should_print = false;
-    if (lvl >= LOG_DEBUG)
-        should_print = (level >= static_cast<int>(lvl) && threshold <= debug_thr);
-    else
+    if (lvl >= LOG_DEBUG) {
+        // If threshold is -1 (default), use the logger instance's debug threshold
+        int effective_threshold = (threshold == -1) ? debug_thr : threshold;
+        should_print = (level >= static_cast<int>(lvl) && level >= effective_threshold);
+    }
+    else {
         should_print = (level >= static_cast<int>(lvl));
+    }
 
     if (!should_print)
         return;

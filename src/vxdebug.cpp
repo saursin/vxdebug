@@ -16,8 +16,8 @@
 #define DEFAULT_TCP_IP   "127.0.0.1"
 #define DEFAULT_TCP_PORT 5555
 
-VortexDebugger::VortexDebugger(): 
-    log_(new Logger("Vxdbg", 3)),
+VortexDebugger::VortexDebugger():
+    log_(new Logger("", 3)),
     backend_(new Backend())
 {
     // Register commands using the helper function
@@ -83,11 +83,11 @@ int VortexDebugger::execute_script(const std::string &filepath) {
         return 1;
     }
 
-    running_ = true;
+    running_ = RUNNING;
 
     std::string line;
     int line_num = 0;
-    while (running_ && std::getline(script_file, line)) {
+    while (running_ == RUNNING && std::getline(script_file, line)) {
         line_num++;
         line = preprocess_commandline(line);
         if (line.empty()) continue; // skip blank lines
@@ -96,7 +96,7 @@ int VortexDebugger::execute_script(const std::string &filepath) {
     }
 
     script_file.close();
-    running_ = false;
+    if(running_ != EXIT) running_ = STOPPED;
     return 0;
 }
 
@@ -104,10 +104,10 @@ int VortexDebugger::start_cli() {
     log_->info("Starting interactive CLI...");
     log_->info("Type 'help' for available commands, 'exit' to quit");
 
-    running_ = true;
+    running_ = RUNNING;
     std::string prev_input;
 
-    while (running_) {
+    while (running_ == RUNNING) {
         std::string input;
     #ifdef USE_READLINE
         // Read input using readline for better UX
@@ -145,7 +145,7 @@ int VortexDebugger::start_cli() {
         __execute_line(input);
     }
 
-    running_ = false;
+    if(running_ != EXIT) running_ = STOPPED;
     return 0;
 }
 
@@ -155,7 +155,7 @@ int VortexDebugger::__execute_line(const std::string &input) {
     std::vector<std::string> toks = tokenize(input, ' ');
     if (toks.empty())
         return 0;
-
+    
     // --- Execute ---
     std::string cmd = toks[0];
     int result = 0;
@@ -225,33 +225,41 @@ int VortexDebugger::cmd_help(const std::vector<std::string>& args) {
 int VortexDebugger::cmd_exit(const std::vector<std::string>& args) {
     (void)args; // Suppress unused variable warning
     log_->info("Exiting...");
-    running_ = false;
+    running_ = EXIT;
     return 0;
 }
 
 int VortexDebugger::cmd_source(const std::vector<std::string>& args) {
-    if (args.size() != 2) {
-        log_->error("Usage: source <script_file>");
-        return RCODE_INVALID_ARG;
-    }
-    const std::string& script_file = args[1];
+    ArgParse::ArgumentParser parser("source", "Execute commands from a script file");
+    parser.add_argument({"script_file"}, "Path to script file", ArgParse::STR, "");
+    int rc = parser.parse_args(args);
+    if (rc != 0) {return rc;}
+
+    const std::string& script_file = parser.get<std::string>("script_file");
     return execute_script(script_file);
 }
 
 int VortexDebugger::cmd_transport(const std::vector<std::string>& args) {
-    if (args.size() < 3) {
-        log_->error("Usage: transport <type> [options]\n Available transports: tcp");
-        return 1;
-    }
-    
-    const std::string& transport_type = args[1];
-    
-    if (transport_type == "tcp") {
+    ArgParse::ArgumentParser parser("transport", "Set backend transport");
+    parser.add_argument({"type"}, "Transport type (e.g., tcp)", ArgParse::STR, "tcp");
+    parser.add_argument({"addr"}, "Transport address (e.g., ip:port for tcp)", ArgParse::STR, "");
+    int rc = parser.parse_args(args);
+    if (rc != 0) {return rc;}
+
+   std::string transport_type = parser.get<std::string>("type");
+   std::string transport_address = parser.get<std::string>("addr");
+
+   if (transport_type == "tcp") {
         log_->info("Setting transport to TCP");
+        if (transport_address.empty()) {
+            transport_address = std::string(DEFAULT_TCP_IP) + ":" + std::to_string(DEFAULT_TCP_PORT);
+            log_->warn("No address specified, using default: " + transport_address);
+        }
+
         std::string ip;
         uint16_t port;
         try {
-            parse_tcp_hostportstr(args[2], ip, port);
+            parse_tcp_hostportstr(transport_address, ip, port);
         } catch (const std::runtime_error& e) {
             log_->error("Error parsing TCP address: " + std::string(e.what()));
             return 1;

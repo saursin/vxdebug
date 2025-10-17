@@ -158,12 +158,20 @@ void Backend::wake_dm() {
 
 void Backend::reset(bool halt_warps) {
     int rc;
-    if (!halt_warps) {
-        // TODO: select all warps
-    }
-
     // Issue system reset via DCTRL.ndmreset
     log_->info("Issuing system reset...");
+    if (halt_warps) {   // Select all warps to halt
+        log_->debug("Selecting all warps to halt after reset.");
+        select_warps(true);
+
+        // Set resethaltreq
+        rc = dmreg_wrfield(DMReg_t::DCTRL, "resethaltreq", 1);
+        if (rc != 0) {
+            log_->error("Failed to set DCTRL.resethaltreq field (rc=" + std::to_string(rc) + ")");
+            return;
+        }
+    }
+
     rc = dmreg_wrfield(DMReg_t::DCTRL, "ndmreset", 1);
     if (rc != 0) {
         log_->error("Failed to set DCTRL.ndmreset field (rc=" + std::to_string(rc) + ")");
@@ -178,10 +186,25 @@ void Backend::reset(bool halt_warps) {
         return;
     }
 
-    if(halt_warps) {
-        // TODO: check if all warps are halted
+    // Pre-read DCTRL to check warp halt status
+    uint32_t dctrl;
+    rc = dmreg_rd(DMReg_t::DCTRL, dctrl);
+    if (rc != 0) {
+        log_->error("Failed to read DCTRL register (rc=" + std::to_string(rc) + ")");
+        return;
     }
 
+    if(halt_warps) {
+        if(extract_dmreg_field(DMReg_t::DCTRL, "allhalted", dctrl)) {
+            log_->info("All warps halted after reset.");
+        }
+        else if(extract_dmreg_field(DMReg_t::DCTRL, "anyhalted", dctrl)) {
+            log_->warn("Some warps halted after reset, but not all.");
+        }
+        else {
+            log_->error("No warps halted after reset.");
+        }
+    }
 
     log_->info("System reset complete.");
     return;
@@ -344,9 +367,14 @@ bool Backend::_check_transport_connected() const {
 // Low-level DM register access
 // =============================================================================
 int Backend::dmreg_rd(const DMReg_t &reg, uint32_t &value) {
+    if (!transport_) {
+        log_->error("Transport not initialized");
+        return RCODE_DISCONNECTED;
+    }
+    
     const auto& rinfo = get_dmreg(reg);
     int rc = transport_->read_reg(rinfo.addr, value);
-    log_->debug("Rd DM[" + std::string(rinfo.name) + "] = 0x" + hex2str(value, 8));
+    log_->debug("Rd DM[" + std::string(rinfo.name) + "] => 0x" + hex2str(value, 8));
     if (rc != 0) {
         log_->error("Failed to read DM register " + std::string(rinfo.name));
         return rc;
@@ -355,9 +383,14 @@ int Backend::dmreg_rd(const DMReg_t &reg, uint32_t &value) {
 }
 
 int Backend::dmreg_wr(const DMReg_t &reg, const uint32_t &value) {
+    if (!transport_) {
+        log_->error("Transport not initialized");
+        return RCODE_DISCONNECTED;
+    }
+    
     const auto& rinfo = get_dmreg(reg);
+    log_->debug("Wr DM[" + std::string(rinfo.name) + "] <= 0x" + hex2str(value, 8));
     int rc = transport_->write_reg(rinfo.addr, value);
-    log_->debug("Wr DM[" + std::string(rinfo.name) + "] = 0x" + hex2str(value, 8));
     if (rc != 0) {
         log_->error("Failed to write DM register " + std::string(rinfo.name));
         return rc;
@@ -366,6 +399,11 @@ int Backend::dmreg_wr(const DMReg_t &reg, const uint32_t &value) {
 }
 
 int Backend::dmreg_rdfield(const DMReg_t &reg, const std::string &fieldname, uint32_t &value) {
+    if (!transport_) {
+        log_->error("Transport not initialized");
+        return RCODE_DISCONNECTED;
+    }
+    
     const auto& rinfo = get_dmreg(reg);
     const FieldInfo_t* finfo = get_dmreg_field(reg, fieldname);
     if (!finfo) {
@@ -375,10 +413,10 @@ int Backend::dmreg_rdfield(const DMReg_t &reg, const std::string &fieldname, uin
 
     uint32_t reg_value = 0;
     int rc = transport_->read_reg(rinfo.addr, reg_value);
+    log_->debug("Rd DM[" + std::string(rinfo.name) + "." + std::string(finfo->name) + "] => 0x" + hex2str(value));
 
     uint32_t field_mask = finfo->mask();
     value = (reg_value & field_mask) >> finfo->lsb;
-    log_->debug("Rd DM[" + std::string(rinfo.name) + "." + std::string(finfo->name) + "] = 0x" + hex2str(value));
     if (rc != 0) {
         log_->error("Failed to read DM register " + std::string(rinfo.name));
         return rc;
@@ -387,6 +425,11 @@ int Backend::dmreg_rdfield(const DMReg_t &reg, const std::string &fieldname, uin
 }
 
 int Backend::dmreg_wrfield(const DMReg_t &reg, const std::string &fieldname, const uint32_t &value) {
+    if (!transport_) {
+        log_->error("Transport not initialized");
+        return RCODE_DISCONNECTED;
+    }
+    
     const auto& rinfo = get_dmreg(reg);
     const FieldInfo_t* finfo = get_dmreg_field(reg, fieldname);
     if (!finfo) {
@@ -413,7 +456,7 @@ int Backend::dmreg_wrfield(const DMReg_t &reg, const std::string &fieldname, con
         return rc;
     }
     
-    log_->debug("Wr DM[" + std::string(rinfo.name) + "." + std::string(finfo->name) + "] = 0x" + hex2str(value));
+    log_->debug("Wr DM[" + std::string(rinfo.name) + "." + std::string(finfo->name) + "] <= 0x" + hex2str(value));
     return RCODE_OK;
 }
 
