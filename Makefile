@@ -8,16 +8,21 @@ $(shell mkdir -p $(BUILD_DIR) $(LIB_DIR) $(OBJ_DIR))
 # Application sources (main directory)
 APP_SRCS:=$(wildcard $(SRC_DIR)/*.cpp)
 APP_OBJS:=$(patsubst $(SRC_DIR)/%.cpp,$(OBJ_DIR)/%.o,$(APP_SRCS))
+APP_DEPS:=$(patsubst $(SRC_DIR)/%.cpp,$(OBJ_DIR)/%.d,$(APP_SRCS))
 
 # Library sources (lib subdirectory)  
 LIB_SRCS:=$(wildcard $(LIB_SRC_DIR)/*.cpp)
 LIB_OBJS:=$(patsubst $(LIB_SRC_DIR)/%.cpp,$(OBJ_DIR)/lib%.o,$(LIB_SRCS))
+LIB_DEPS:=$(patsubst $(LIB_SRC_DIR)/%.cpp,$(OBJ_DIR)/lib%.d,$(LIB_SRCS))
 
-CFLAGS:=-g -O2 -Wall -Wextra -std=c++17 -I$(LIB_SRC_DIR) -I$(SRC_DIR)
+CFLAGS:=-g -O2 -Wall -Wextra -std=c++17 -I$(LIB_SRC_DIR) -I$(SRC_DIR) -MMD -MP
 LDFLAGS:=-L$(LIB_DIR) -largparse -ltcputils -llogger -lpthread -lreadline
 EXEC:=$(BUILD_DIR)/vxdebug
 
 LIBS:= $(LIB_DIR)/libargparse.a $(LIB_DIR)/libtcputils.a $(LIB_DIR)/liblogger.a
+
+# Include dependency files if they exist
+-include $(APP_DEPS) $(LIB_DEPS)
 
 .PHONY: all
 all: lib debugger
@@ -75,7 +80,7 @@ test: $(EXEC)
 
 .PHONY: clean
 clean:
-	rm -f $(OBJ_DIR)/*.o $(EXEC)
+	rm -f $(OBJ_DIR)/*.o $(OBJ_DIR)/*.d $(EXEC)
 
 .PHONY: clean-all
 clean-all: clean
