@@ -91,7 +91,7 @@ int VortexDebugger::execute_script(const std::string &filepath) {
         line_num++;
         line = preprocess_commandline(line);
         if (line.empty()) continue; // skip blank lines
-        printf(ANSI_GRN "%s:%d: %s\n" ANSI_RST, file_basename.c_str(), line_num, line.c_str());
+        printf(ANSI_YLW "%s:%d: %s\n" ANSI_RST, file_basename.c_str(), line_num, line.c_str());
         __execute_line(line);
     }
 
@@ -241,16 +241,13 @@ int VortexDebugger::cmd_source(const std::vector<std::string>& args) {
 
 int VortexDebugger::cmd_transport(const std::vector<std::string>& args) {
     ArgParse::ArgumentParser parser("transport", "Set backend transport");
-    parser.add_argument({"type"}, "Transport type (e.g., tcp)", ArgParse::STR, "tcp");
-    parser.add_argument({"addr"}, "Transport address (e.g., ip:port for tcp)", ArgParse::STR, "");
+    parser.add_argument({"--tcp"}, "Connect via TCP (host:port)", ArgParse::STR, "");
     int rc = parser.parse_args(args);
     if (rc != 0) {return rc;}
 
-   std::string transport_type = parser.get<std::string>("type");
-   std::string transport_address = parser.get<std::string>("addr");
-
-   if (transport_type == "tcp") {
+   if (parser.get<std::string>("tcp") != "") {
         log_->info("Setting transport to TCP");
+        std::string transport_address = parser.get<std::string>("tcp");
         if (transport_address.empty()) {
             transport_address = std::string(DEFAULT_TCP_IP) + ":" + std::to_string(DEFAULT_TCP_PORT);
             log_->warn("No address specified, using default: " + transport_address);
@@ -272,7 +269,7 @@ int VortexDebugger::cmd_transport(const std::vector<std::string>& args) {
         backend_->connect_transport({{"ip", ip}, {"port", std::to_string(port)}});
         backend_->initialize();
     } else {
-        log_->error("Unknown transport type: " + transport_type);
+        log_->error("No transport type specified");
         return 1;
     }
    

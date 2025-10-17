@@ -1,13 +1,18 @@
 #pragma once
 #include <string_view>
 #include <cstdint>
+#include <stdexcept>
 
 struct FieldInfo_t {
     std::string_view name;
     uint8_t msb;
     uint8_t lsb;
     uint32_t mask() const {
-        return ((1u << (msb - lsb + 1)) - 1) << lsb;
+        uint32_t width = msb - lsb + 1;
+        if (width == 32) {
+            return 0xFFFFFFFF;  // Handle 32-bit field case
+        }
+        return ((1u << width) - 1) << lsb;
     }
     uint32_t width() const {
         return msb - lsb + 1;
@@ -106,20 +111,24 @@ constexpr const DMRegInfo_t& get_dmreg(DMReg_t id) noexcept {
     return DM_REGS[static_cast<size_t>(id)];
 }
 
-constexpr const FieldInfo_t* get_dmreg_field(DMReg_t reg, std::string_view fieldname) noexcept {
+inline const FieldInfo_t* get_dmreg_field(DMReg_t reg, std::string_view fieldname) {
     const auto& rinfo = get_dmreg(reg);
     for (size_t i = 0; i < rinfo.num_fields; ++i) {
         if (rinfo.fields[i].name == fieldname) {
             return &rinfo.fields[i];
         }
     }
-    return nullptr;
+    throw std::runtime_error("Invalid field name '" + std::string(fieldname) + "' for register '" + std::string(rinfo.name) + "'");
 }
 
-constexpr uint32_t extract_dmreg_field(DMReg_t reg, std::string_view fieldname, uint32_t reg_value) noexcept {
+inline uint32_t extract_dmreg_field(DMReg_t reg, std::string_view fieldname, uint32_t reg_value) {
     const auto* finfo = get_dmreg_field(reg, fieldname);
-    if (finfo) {
-        return (reg_value & finfo->mask()) >> finfo->lsb;
-    }
-    return 0xdeadbeef; // Invalid value to indicate error
+    return (reg_value & finfo->mask()) >> finfo->lsb;
+}
+
+inline uint32_t set_dmreg_field(DMReg_t reg, std::string_view fieldname, uint32_t reg_value, uint32_t field_value) {
+    const auto* finfo = get_dmreg_field(reg, fieldname);
+    uint32_t field_mask = finfo->mask();
+    reg_value = (reg_value & ~field_mask) | ((field_value << finfo->lsb) & field_mask);
+    return reg_value;
 }

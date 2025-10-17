@@ -30,9 +30,10 @@ ifeq ($(USE_READLINE),1)
     LDFLAGS+= -lreadline
 endif
 
-DEBUG?=1		# Enable debug by default for development
+# Enable debug by default for development
+DEBUG?=1
 ifeq ($(DEBUG),1)
-	CFLAGS+= -g -O0 -DDEBUG
+    CFLAGS+= -g -O0 -DDEBUG
 endif
 
 .PHONY: all

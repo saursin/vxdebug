@@ -172,6 +172,7 @@ void Backend::reset(bool halt_warps) {
         }
     }
 
+    log_->debug("Setting DCTRL.ndmreset to initiate reset.");
     rc = dmreg_wrfield(DMReg_t::DCTRL, "ndmreset", 1);
     if (rc != 0) {
         log_->error("Failed to set DCTRL.ndmreset field (rc=" + std::to_string(rc) + ")");
@@ -179,6 +180,7 @@ void Backend::reset(bool halt_warps) {
     }
 
     // Wait for reset to complete (ndmreset to clear)
+    log_->debug("Waiting for reset to complete... (DCTRL.ndmreset to clear)");
     uint32_t ndmreset = 1;
     rc = dmreg_pollfield(DMReg_t::DCTRL, "ndmreset", 0, &ndmreset, wake_dm_retries_, wake_dm_delay_ms_);
     if (rc != 0) {
@@ -187,6 +189,7 @@ void Backend::reset(bool halt_warps) {
     }
 
     // Pre-read DCTRL to check warp halt status
+    log_->debug("Checking warp halt status after reset.");
     uint32_t dctrl;
     rc = dmreg_rd(DMReg_t::DCTRL, dctrl);
     if (rc != 0) {
@@ -207,6 +210,10 @@ void Backend::reset(bool halt_warps) {
     }
 
     log_->info("System reset complete.");
+    
+    // Re-initialize backend after reset
+    initialize();
+    
     return;
 }
 
@@ -280,7 +287,6 @@ void Backend::select_warps(bool all) {
             return;
         }
     }
-    log_->info(all ? "Selected all warps." : "Deselected all warps.");
     return;
 }
 
@@ -374,11 +380,14 @@ int Backend::dmreg_rd(const DMReg_t &reg, uint32_t &value) {
     
     const auto& rinfo = get_dmreg(reg);
     int rc = transport_->read_reg(rinfo.addr, value);
-    log_->debug("Rd DM[" + std::string(rinfo.name) + "] => 0x" + hex2str(value, 8));
     if (rc != 0) {
         log_->error("Failed to read DM register " + std::string(rinfo.name));
         return rc;
     }
+    log_->debug(strfmt("Rd DMReg[0x%04X, %s] => 0x%08X", 
+                      rinfo.addr, 
+                      std::string(rinfo.name).c_str(), 
+                      value));
     return RCODE_OK;
 }
 
@@ -389,12 +398,15 @@ int Backend::dmreg_wr(const DMReg_t &reg, const uint32_t &value) {
     }
     
     const auto& rinfo = get_dmreg(reg);
-    log_->debug("Wr DM[" + std::string(rinfo.name) + "] <= 0x" + hex2str(value, 8));
     int rc = transport_->write_reg(rinfo.addr, value);
     if (rc != 0) {
         log_->error("Failed to write DM register " + std::string(rinfo.name));
         return rc;
     }
+    log_->debug(strfmt("Wr DMReg[0x%04X, %s] <= 0x%08X", 
+                      rinfo.addr, 
+                      std::string(rinfo.name).c_str(), 
+                      value));
     return RCODE_OK;
 }
 
@@ -405,23 +417,28 @@ int Backend::dmreg_rdfield(const DMReg_t &reg, const std::string &fieldname, uin
     }
     
     const auto& rinfo = get_dmreg(reg);
-    const FieldInfo_t* finfo = get_dmreg_field(reg, fieldname);
-    if (!finfo) {
-        log_->error("Invalid field name: " + fieldname);
+    
+    try {
+        const FieldInfo_t* finfo = get_dmreg_field(reg, fieldname);
+        
+        uint32_t reg_value = 0;
+        int rc = transport_->read_reg(rinfo.addr, reg_value);
+        value = extract_dmreg_field(reg, fieldname, reg_value);
+        if (rc != 0) {
+            log_->error("Failed to read DM register " + std::string(rinfo.name));
+            return rc;
+        }
+        log_->debug(strfmt("Rd DMReg[0x%04X, %s.%s] => 0x%X  (RegVal: 0x%08X)", 
+                          rinfo.addr, 
+                          std::string(rinfo.name).c_str(), 
+                          std::string(finfo->name).c_str(), 
+                          value, 
+                          reg_value));
+        return RCODE_OK;
+    } catch (const std::exception& e) {
+        log_->error("Failed to read field: " + std::string(e.what()));
         return RCODE_INVALID_ARG;
     }
-
-    uint32_t reg_value = 0;
-    int rc = transport_->read_reg(rinfo.addr, reg_value);
-    log_->debug("Rd DM[" + std::string(rinfo.name) + "." + std::string(finfo->name) + "] => 0x" + hex2str(value));
-
-    uint32_t field_mask = finfo->mask();
-    value = (reg_value & field_mask) >> finfo->lsb;
-    if (rc != 0) {
-        log_->error("Failed to read DM register " + std::string(rinfo.name));
-        return rc;
-    }
-    return RCODE_OK;
 }
 
 int Backend::dmreg_wrfield(const DMReg_t &reg, const std::string &fieldname, const uint32_t &value) {
@@ -431,79 +448,88 @@ int Backend::dmreg_wrfield(const DMReg_t &reg, const std::string &fieldname, con
     }
     
     const auto& rinfo = get_dmreg(reg);
-    const FieldInfo_t* finfo = get_dmreg_field(reg, fieldname);
-    if (!finfo) {
-        log_->error("Invalid field name: " + fieldname);
+    
+    try {
+        const FieldInfo_t* finfo = get_dmreg_field(reg, fieldname);
+
+        // Read current register value
+        uint32_t curr_reg_value = 0;
+        int rc = transport_->read_reg(rinfo.addr, curr_reg_value);
+        if (rc != 0) {
+            log_->error("Failed to read DM register " + std::string(rinfo.name));
+            return rc;
+        }
+
+        // Modify only the specific field
+        uint32_t new_reg_value = set_dmreg_field(reg, fieldname, curr_reg_value, value);
+        
+        // Write back the modified register
+        rc = transport_->write_reg(rinfo.addr, new_reg_value);
+        if (rc != 0) {
+            log_->error("Failed to write DM register " + std::string(rinfo.name));
+            return rc;
+        }
+
+        log_->debug(strfmt("Wr DMReg[0x%04X, %s.%s] <= 0x%X (NewRegVal: 0x%08X, OldRegVal: 0x%08X)", 
+                          rinfo.addr, 
+                          std::string(rinfo.name).c_str(), 
+                          std::string(finfo->name).c_str(), 
+                          value, 
+                          new_reg_value, 
+                          curr_reg_value));
+        return RCODE_OK;
+    } catch (const std::exception& e) {
+        log_->error("Failed to write field: " + std::string(e.what()));
         return RCODE_INVALID_ARG;
     }
-
-    // Read current register value
-    uint32_t reg_value = 0;
-    int rc = transport_->read_reg(rinfo.addr, reg_value);
-    if (rc != 0) {
-        log_->error("Failed to read DM register " + std::string(rinfo.name));
-        return rc;
-    }
-
-    // Modify only the specific field
-    uint32_t field_mask = finfo->mask();
-    reg_value = (reg_value & ~field_mask) | ((value << finfo->lsb) & field_mask);
-    
-    // Write back the modified register
-    rc = transport_->write_reg(rinfo.addr, reg_value);
-    if (rc != 0) {
-        log_->error("Failed to write DM register " + std::string(rinfo.name));
-        return rc;
-    }
-    
-    log_->debug("Wr DM[" + std::string(rinfo.name) + "." + std::string(finfo->name) + "] <= 0x" + hex2str(value));
-    return RCODE_OK;
 }
 
 int Backend::dmreg_pollfield(const DMReg_t &reg, const std::string &fieldname, const uint32_t &exp_value, uint32_t *final_value,
                         int max_retries, int delay_ms) {
     const auto& rinfo = get_dmreg(reg);
-    const FieldInfo_t* finfo = get_dmreg_field(reg, fieldname);
-    if (!finfo) {
-        log_->error("Invalid field name: " + fieldname);
+    
+    try {
+        const FieldInfo_t* finfo = get_dmreg_field(reg, fieldname);
+
+        uint32_t field_mask = finfo->mask();
+        uint32_t value = 0;
+    
+        for (int attempt = 0; attempt < max_retries; ++attempt) {
+            uint32_t reg_value = 0;
+            int rc = transport_->read_reg(rinfo.addr, reg_value);
+            if (rc != 0) {
+                log_->error("Failed to read DM register " + std::string(rinfo.name) + " on attempt " + std::to_string(attempt + 1));
+                return rc;
+            }
+            
+            value = (reg_value & field_mask) >> finfo->lsb;
+            log_->debug("Poll DM[" + std::string(rinfo.name) + "." + std::string(finfo->name) + "] = 0x" + hex2str(value) + 
+                    " (attempt " + std::to_string(attempt + 1) + "/" + std::to_string(max_retries) + ")");
+            
+            if (value == exp_value) {
+                if (final_value) {
+                    *final_value = value;
+                }
+                return RCODE_OK;
+            }
+            
+            // Don't sleep on the last iteration
+            if (attempt < max_retries - 1) {
+                msleep(delay_ms);
+            }
+        }
+    
+        // Store final value for caller inspection
+        if (final_value) {
+            *final_value = value;
+        }
+        
+        log_->error("MaxRetryReached: Field " + std::string(rinfo.name) + "." + std::string(finfo->name) +
+                    " did not reach expected value 0x" + hex2str(exp_value) + 
+                    " (final value: 0x" + hex2str(value) + ")");
+        return RCODE_TIMEOUT;
+    } catch (const std::exception& e) {
+        log_->error("Failed to poll field: " + std::string(e.what()));
         return RCODE_INVALID_ARG;
     }
-
-    uint32_t field_mask = finfo->mask();
-    uint32_t value = 0;
-    
-    for (int attempt = 0; attempt < max_retries; ++attempt) {
-        uint32_t reg_value = 0;
-        int rc = transport_->read_reg(rinfo.addr, reg_value);
-        if (rc != 0) {
-            log_->error("Failed to read DM register " + std::string(rinfo.name) + " on attempt " + std::to_string(attempt + 1));
-            return rc;
-        }
-        
-        value = (reg_value & field_mask) >> finfo->lsb;
-        log_->debug("Poll DM[" + std::string(rinfo.name) + "." + std::string(finfo->name) + "] = 0x" + hex2str(value) + 
-                   " (attempt " + std::to_string(attempt + 1) + "/" + std::to_string(max_retries) + ")");
-        
-        if (value == exp_value) {
-            if (final_value) {
-                *final_value = value;
-            }
-            return RCODE_OK;
-        }
-        
-        // Don't sleep on the last iteration
-        if (attempt < max_retries - 1) {
-            msleep(delay_ms);
-        }
-    }
-    
-    // Store final value for caller inspection
-    if (final_value) {
-        *final_value = value;
-    }
-    
-    log_->error("MaxRetryReached: Field " + std::string(rinfo.name) + "." + std::string(finfo->name) +
-                " did not reach expected value 0x" + hex2str(exp_value) + 
-                " (final value: 0x" + hex2str(value) + ")");
-    return RCODE_TIMEOUT;
 }
