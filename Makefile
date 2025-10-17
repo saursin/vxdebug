@@ -6,6 +6,8 @@ LIB_DIR:=$(BUILD_DIR)/lib
 OBJ_DIR:=$(BUILD_DIR)/obj
 SRC_DIR:=src
 LIB_SRC_DIR:=lib
+THIRD_PARTY_DIR:=third-party
+ARGPARSE_DIR:=$(THIRD_PARTY_DIR)/argparse-cpp
 $(shell mkdir -p $(BUILD_DIR) $(LIB_DIR) $(OBJ_DIR))
 
 # Application sources (main directory)
@@ -13,12 +15,15 @@ APP_SRCS:=$(wildcard $(SRC_DIR)/*.cpp)
 APP_OBJS:=$(patsubst $(SRC_DIR)/%.cpp,$(OBJ_DIR)/%.o,$(APP_SRCS))
 APP_DEPS:=$(patsubst $(SRC_DIR)/%.cpp,$(OBJ_DIR)/%.d,$(APP_SRCS))
 
-# Library sources (lib subdirectory)  
-LIB_SRCS:=$(wildcard $(LIB_SRC_DIR)/*.cpp)
+# Library sources (lib subdirectory - excluding argparse which comes from submodule)
+LIB_SRCS:=$(filter-out $(LIB_SRC_DIR)/argparse.cpp, $(wildcard $(LIB_SRC_DIR)/*.cpp))
 LIB_OBJS:=$(patsubst $(LIB_SRC_DIR)/%.cpp,$(OBJ_DIR)/lib%.o,$(LIB_SRCS))
 LIB_DEPS:=$(patsubst $(LIB_SRC_DIR)/%.cpp,$(OBJ_DIR)/lib%.d,$(LIB_SRCS))
 
-CFLAGS:=-O2 -Wall -Wextra -std=c++17 -I$(LIB_SRC_DIR) -I$(SRC_DIR) -MMD -MP
+# ArgParse from submodule - built using its own Makefile
+ARGPARSE_SRC:=$(ARGPARSE_DIR)/src/argparse.cpp
+
+CFLAGS:=-O2 -Wall -Wextra -std=c++17 -I$(LIB_SRC_DIR) -I$(SRC_DIR) -I$(ARGPARSE_DIR)/include -MMD -MP
 LDFLAGS:=-L$(LIB_DIR) -largparse -ltcputils -llogger -lpthread
 EXEC:=$(BUILD_DIR)/vxdebug
 
@@ -46,6 +51,11 @@ lib: $(LIBS)
 # Package object files into static libraries
 $(LIB_DIR)/lib%.a: $(OBJ_DIR)/lib%.o
 	ar rcs $@ $<
+
+# Special rule for argparse from submodule - use its own Makefile
+$(LIB_DIR)/libargparse.a: $(ARGPARSE_SRC)
+	$(MAKE) -C $(ARGPARSE_DIR) static
+	cp $(ARGPARSE_DIR)/build/lib/libargparse.a $@
 
 # Compile library source files
 .PRECIOUS: $(OBJ_DIR)/lib%.o
@@ -97,6 +107,7 @@ clean:
 .PHONY: clean-all
 clean-all: clean
 	rm -f $(LIB_DIR)/*.a
+	$(MAKE) -C $(ARGPARSE_DIR) clean
 
 # Include dependency files if they exist (at the end to avoid interfering with default target)
 -include $(APP_DEPS) $(LIB_DEPS)
