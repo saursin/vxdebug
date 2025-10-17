@@ -121,5 +121,5 @@ constexpr uint32_t extract_dmreg_field(DMReg_t reg, std::string_view fieldname, 
     if (finfo) {
         return (reg_value & finfo->mask()) >> finfo->lsb;
     }
-    return 0;
+    return 0xdeadbeef; // Invalid value to indicate error
 }

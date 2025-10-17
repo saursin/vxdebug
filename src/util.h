@@ -11,7 +11,7 @@
 #define RCODE_INVALID_ARG       -4
 #define RCODE_BUFFER_OVRFLW     -5
 #define RCODE_COMM_ERR          -6
-#define RCODE_NOT_CONNECTED     -7
+#define RCODE_DISCONNECTED      -7
 
 // ANSI colors
 #define ANSI_RST "\033[0m"
@@ -38,3 +38,9 @@ std::string hex2str(uint32_t value, size_t num_prefix = 0, char prefix_char = '0
 
 // Parse a "host:port" string into IP and port components
 void parse_tcp_hostportstr(const std::string &str, std::string &ip, uint16_t &port);
+
+// Extract basename from a file path
+std::string basename(const std::string &path);
+
+// Preprocess command line: strip comments/whitespace
+std::string preprocess_commandline(const std::string &input);

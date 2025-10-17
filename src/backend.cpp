@@ -4,12 +4,16 @@
 #include "util.h"
 #include <unistd.h>
 
+#ifndef VORTEX_PLATFORMID
+    #define VORTEX_PLATFORMID 0x1
+#endif
+
 #define msleep(x) usleep(x * 1000)
 
 Backend::Backend(): 
     transport_(nullptr),
     transport_type_(""),
-    log_(new Logger("Backend"))
+    log_(new Logger("Backend", 4))
 {}
 
 Backend::~Backend() {
@@ -48,13 +52,14 @@ void Backend::connect_transport(const std::map<std::string, std::string> &args) 
     }
     if (transport_type_ == "tcp") {
         int rc = transport_->connect(args);
-        if (rc != 0) {
+        if (rc != RCODE_OK) {
             log_->error("Failed to connect TCP transport.");
+            return;
         }
+        log_->info("Transport connected!");
     } else {
         log_->error("Transport type not supported for connection: " + transport_type_);
     }
-    log_->info("Transport connected!");
 }
 
 void Backend::disconnect_transport() {
@@ -116,7 +121,7 @@ void Backend::wake_dm() {
     }
     if (ndmreset) {
         // Wait for ndmreset to low
-        log_->debug("Waiting for DCTRL.ndmreset to clear (if any)...");
+        log_->debug("Waiting for DCTRL.ndmreset to clear...");
         rc = dmreg_pollfield(DMReg_t::DCTRL, "ndmreset", 0, &ndmreset, wake_dm_retries_, wake_dm_delay_ms_);
         if (rc != 0) {
             log_->error("Failed to poll DCTRL.ndmreset field (rc=" + std::to_string(rc)+")");
@@ -133,19 +138,21 @@ void Backend::wake_dm() {
     }
     if (!dmactive) {
         // DM is not active, need to wake it up
-        log_->info("DM not active, Waking up DM by setting DCTRL.dmactive...");
+        log_->debug("DM not active, Waking up DM by setting DCTRL.dmactive...");
         do {
             rc = dmreg_wrfield(DMReg_t::DCTRL, "dmactive", 1);
             if (rc != 0) {
                 log_->error("Failed to write DCTRL.dmactive field (rc=" + std::to_string(rc)+")");
+                return;
             }
             rc = dmreg_pollfield(DMReg_t::DCTRL, "dmactive", 1, &dmactive, wake_dm_retries_, wake_dm_delay_ms_);
             if (rc != 0) {
                 log_->warn("Failed to poll DCTRL.dmactive field (rc=" + std::to_string(rc) + "), retrying...");
+                return;
             }
         } while (dmactive == 0);
     }
-    log_->info("DM is awake.");
+    log_->debug("DM is awake!");
     return;
 }
 
@@ -189,8 +196,8 @@ void Backend::get_platform_info() {
         return;
     }
 
-    state_.platinfo.platform_id     = extract_dmreg_field(DMReg_t::PLATFORM, "platform_id", platform);
-    state_.platinfo.platform_name   = state_.platinfo.platform_id ? "Vortex" : "Unknown";
+    state_.platinfo.platform_id     = extract_dmreg_field(DMReg_t::PLATFORM, "platformid", platform);
+    state_.platinfo.platform_name   = state_.platinfo.platform_id == VORTEX_PLATFORMID ? "Vortex" : "Unknown";
     state_.platinfo.num_clusters    = extract_dmreg_field(DMReg_t::PLATFORM, "numclusters", platform);
     state_.platinfo.num_cores       = extract_dmreg_field(DMReg_t::PLATFORM, "numcores", platform);
     state_.platinfo.num_warps       = extract_dmreg_field(DMReg_t::PLATFORM, "numwarps", platform);

@@ -97,4 +97,4 @@ We use a config script (`vxdbg.cfg`) to perform initialization, start GDB server
 vxdbg -f vxdbg.cfg
 ```
 
-- use `-v 5` to view all debug messages.
+- Verbosity levels: `0:error`, `1:warn`, `2:info`, `3:debug_vxdebug`, `4:debug_backend`, `5:debug_transport`. Set using `-v <level>`

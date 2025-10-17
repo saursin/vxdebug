@@ -15,7 +15,7 @@
 
 Transport::Transport(const std::string &name):
     name_(name),
-    log_(new Logger(name + "Transport"))
+    log_(new Logger(name + "Transport", 5))
 {}
 
 Transport::~Transport() {
@@ -112,7 +112,7 @@ int Transport::read_regs(const std::vector<uint32_t> &addrs, std::vector<uint32_
         std::vector<std::string> tokens = tokenize(rbuf.substr(1), ',');
         if(tokens.size() != n) {
             log_->error("Batch read response size mismatch");
-            return RCODE_ERROR;
+            return RCODE_INVALID_ARG;
         }
         data.clear();
         for(const auto& tok : tokens) {
@@ -208,9 +208,6 @@ int TCPTransport::connect(const std::map<std::string, std::string> &args) {
     try {
         std::string ip = args.at("ip");
         uint16_t port = static_cast<uint16_t>(std::stoi(args.at("port")));
-        if (ip == "localhost") {
-            ip = "127.0.0.1";
-        }       
         client_->connect(ip, port);
     } catch (const std::exception &e) {
         log_->error("Connection failed: " + std::string(e.what()));
@@ -284,12 +281,12 @@ int TCPTransport::_recv_buf(std::string &out) {
             auto elapsed = std::chrono::steady_clock::now() - start_time;
             if (elapsed > timeout_duration) {
                 log_->error("Receive timeout - no response from server");
-                return RCODE_ERROR;
+                return RCODE_TIMEOUT;
             }
             
             if (!client_->is_connected()) {
                 log_->error("Client disconnected while waiting for data");
-                return RCODE_ERROR;
+                return RCODE_DISCONNECTED;
             }
             
             // Small delay before retrying

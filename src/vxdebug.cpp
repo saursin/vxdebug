@@ -1,5 +1,6 @@
 #include "vxdebug.h"
 #include "logger.h"
+#include "argparse.h"
 #include "util.h"
 #include "backend.h"
 
@@ -13,13 +14,15 @@
 #define DEFAULT_TCP_PORT 5555
 
 VortexDebugger::VortexDebugger(): 
-    log_(new Logger("Vxdbg")),
+    log_(new Logger("Vxdbg", 3)),
     backend_(new Backend())
 {
     // Register commands using the helper function
-    register_command("help", {"h"}, "Show this help message", &VortexDebugger::cmd_help);
-    register_command("exit", {"quit", "q"}, "Exit the debugger", &VortexDebugger::cmd_exit);
-    register_command("transport", {"t"}, "Set backend transport", &VortexDebugger::cmd_transport);
+    register_command("help",      {"h"},         "Show this help message", &VortexDebugger::cmd_help);
+    register_command("exit",      {"quit", "q"}, "Exit the debugger", &VortexDebugger::cmd_exit);
+    register_command("transport", {"t"},         "Set backend transport", &VortexDebugger::cmd_transport);
+    register_command("source",    {"src"},       "Execute commands from a script file", &VortexDebugger::cmd_source);
+    register_command("reset",     {"R"},         "Reset the target system", &VortexDebugger::cmd_reset);
 }
 
 VortexDebugger::~VortexDebugger() {
@@ -67,12 +70,13 @@ int VortexDebugger::execute_command(const std::string &cmd, const std::vector<st
     return (this->*handler)(args);
 }
 
-int VortexDebugger::execute_script(const std::string &path) {
-    log_->info("Executing script: " + path);
+int VortexDebugger::execute_script(const std::string &filepath) {
+    log_->info("Executing script: " + filepath);
+    std::string file_basename = basename(filepath);
 
-    std::ifstream script_file(path);
+    std::ifstream script_file(filepath);
     if (!script_file.is_open()) {
-        log_->error("Failed to open script file: " + path);
+        log_->error("Failed to open script file: " + filepath);
         return 1;
     }
 
@@ -82,7 +86,10 @@ int VortexDebugger::execute_script(const std::string &path) {
     int line_num = 0;
     while (running_ && std::getline(script_file, line)) {
         line_num++;
-        __execute_line(line, line_num, true);
+        line = preprocess_commandline(line);
+        if (line.empty()) continue; // skip blank lines
+        printf(ANSI_GRN "%s:%d: %s\n" ANSI_RST, file_basename.c_str(), line_num, line.c_str());
+        __execute_line(line);
     }
 
     script_file.close();
@@ -118,6 +125,9 @@ int VortexDebugger::start_cli() {
 
         prev_input = input;
 
+        input = preprocess_commandline(input);
+        if (input.empty()) continue; // skip blank lines
+
         __execute_line(input);
     }
 
@@ -126,28 +136,14 @@ int VortexDebugger::start_cli() {
 }
 
 
-int VortexDebugger::__execute_line(const std::string &raw_input, int line_num, bool show_echo) {
-    std::string input = raw_input;
-
-    // --- Preprocessing ---
-    size_t comment_pos = input.find('#');
-    if (comment_pos != std::string::npos)
-        input = input.substr(0, comment_pos);
-    input = strip(input);
-    if (input.empty())
-        return 0; // skip
-
+int VortexDebugger::__execute_line(const std::string &input) {
     // --- Tokenize ---
     std::vector<std::string> toks = tokenize(input, ' ');
     if (toks.empty())
         return 0;
 
+    // --- Execute ---
     std::string cmd = toks[0];
-
-    if (show_echo) {
-        printf(ANSI_GRN "%d: %s\n" ANSI_RST, line_num, input.c_str());
-    }
-
     int result = 0;
     try {
         result = execute_command(cmd, toks);
@@ -219,8 +215,17 @@ int VortexDebugger::cmd_exit(const std::vector<std::string>& args) {
     return 0;
 }
 
+int VortexDebugger::cmd_source(const std::vector<std::string>& args) {
+    if (args.size() != 2) {
+        log_->error("Usage: source <script_file>");
+        return RCODE_INVALID_ARG;
+    }
+    const std::string& script_file = args[1];
+    return execute_script(script_file);
+}
+
 int VortexDebugger::cmd_transport(const std::vector<std::string>& args) {
-    if (args.size() < 2) {
+    if (args.size() < 3) {
         log_->error("Usage: transport <type> [options]\n Available transports: tcp");
         return 1;
     }
@@ -243,9 +248,7 @@ int VortexDebugger::cmd_transport(const std::vector<std::string>& args) {
 
         backend_->setup_transport("tcp");
         backend_->connect_transport({{"ip", ip}, {"port", std::to_string(port)}});
-
         backend_->initialize();
-
     } else {
         log_->error("Unknown transport type: " + transport_type);
         return 1;
@@ -254,3 +257,15 @@ int VortexDebugger::cmd_transport(const std::vector<std::string>& args) {
     return 0;
 }
 
+int VortexDebugger::cmd_reset(const std::vector<std::string>& args) {
+    ArgParse::ArgumentParser parser("reset", "Reset the target system");
+    parser.add_argument({"-h", "--halt"}, "Halt all warps after reset", ArgParse::BOOL, "false");
+    int rc = parser.parse_args(args);
+    if (rc != 0) {return rc;}
+
+    bool halt_warps = parser.get<bool>("halt");
+    
+    log_->info("Resetting target" + std::string(halt_warps ? " and halting warps" : ""));    
+    backend_->reset(halt_warps);
+    return 0;
+}

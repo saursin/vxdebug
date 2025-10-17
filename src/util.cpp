@@ -80,15 +80,10 @@ void parse_tcp_hostportstr(const std::string &str, std::string &ip, uint16_t &po
 
     if(colon_pos > 0) {
         // IP part is present
-        
-        // Validate basic IP format (very basic check)
-        size_t dot1 = str.find('.', 0);
-        size_t dot2 = str.find('.', dot1 + 1);
-        size_t dot3 = str.find('.', dot2 + 1);
-        if (dot1 == std::string::npos || dot2 == std::string::npos || dot3 == std::string::npos || dot3 > colon_pos) {
-            throw std::runtime_error("Invalid IP address format");
-        }
         ip = str.substr(0, colon_pos);
+        if(ip == "localhost") {
+            ip = "127.0.0.1";
+        }
     }
     else {
         ip = "";
@@ -105,4 +100,20 @@ void parse_tcp_hostportstr(const std::string &str, std::string &ip, uint16_t &po
     else {
         port = 0; // Indicate no port specified
     }
+}
+
+std::string basename(const std::string& path) {
+    // Handle both Unix '/' and Windows '\\' separators
+    size_t pos = path.find_last_of("/\\");
+    if (pos == std::string::npos)
+        return path; // no directory component
+    return path.substr(pos + 1);
+}
+
+std::string preprocess_commandline(const std::string &input) {
+    std::string line = input;
+    size_t comment_pos = line.find('#');
+    if (comment_pos != std::string::npos)
+        line = line.substr(0, comment_pos);
+    return strip(line);
 }

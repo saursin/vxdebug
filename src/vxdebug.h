@@ -22,7 +22,9 @@ public:
     // command handlers
     int cmd_help(const std::vector<std::string>& args);
     int cmd_exit(const std::vector<std::string>& args);
+    int cmd_source(const std::vector<std::string>& args);
     int cmd_transport(const std::vector<std::string>& args);
+    int cmd_reset(const std::vector<std::string>& args);
 
 private:
     Logger *log_;
@@ -35,7 +37,7 @@ private:
                          const std::string& description,
                          CommandHandler_t handler);
 
-    int __execute_line(const std::string &raw_input, int line_num=0, bool show_echo=false);
+    int __execute_line(const std::string &raw_input);
     
     // command table
     struct Command_t {

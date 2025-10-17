@@ -55,7 +55,7 @@ int main(const int argc, char** argv) {
     if (parser.get<bool>("no_color")) {
         Logger::set_color_enabled(false);
     }
-    Logger::set_global_verbosity(parser.get<int>("verbose"));
+    Logger::set_global_level(static_cast<LogLevel>(parser.get<int>("verbose")));
 
     std::string log_file = parser.get<std::string>("log");
     if (!log_file.empty()) {
