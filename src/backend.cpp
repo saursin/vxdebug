@@ -238,6 +238,57 @@ void Backend::get_platform_info() {
     return;
 }
 
+std::map<int, std::pair<bool, uint32_t>> Backend::get_warp_status(bool include_pc) {
+    std::map<int, std::pair<bool, uint32_t>> warp_status;
+    int rc;
+
+    // Save current selection
+    int saved_wid = state_.selected_wid;
+    int saved_tid = state_.selected_tid;
+
+    size_t num_wins = (state_.platinfo.num_total_warps + 31) / 32;
+    for (size_t win=0; win < num_wins; ++win) {
+        // Select win
+        rc = dmreg_wrfield(DMReg_t::DSELECT, "winsel", win);
+        if (rc != 0) {
+            log_->error("Failed to write DSELECT.winsel field (rc=" + std::to_string(rc) + ")");
+            break;
+        }
+
+        // Read WSTATUS
+        uint32_t wstatus = 0;
+        rc = dmreg_rd(DMReg_t::WSTATUS, wstatus);
+        if (rc != 0) {
+            log_->error("Failed to read WSTATUS register (rc=" + std::to_string(rc) + ")");
+            break;
+        }
+
+        // Parse status bits
+        for (size_t bit=0; bit < 32; ++bit) {
+            int wid = win * 32 + bit;
+            if (wid >= static_cast<int>(state_.platinfo.num_total_warps))
+                break;
+            bool halted = (wstatus >> bit) & 0x1;
+            uint32_t pc = 0;
+            if(halted && include_pc) {
+                select_warp_thread(wid, 0);     // Changes current selection
+                rc = dmreg_rd(DMReg_t::DPC, pc);
+                if (rc != 0) {
+                    log_->error("Failed to read DPC register for warp " + std::to_string(wid) + " (rc=" + std::to_string(rc) + ")");
+                    pc = 0;
+                }
+            }
+            warp_status[wid] = std::make_pair(halted, pc);
+        }
+    }
+    
+    // Restore original selection
+    if (saved_wid >= 0 && saved_tid >= 0) {
+        select_warp_thread(saved_wid, saved_tid);
+    }
+    return warp_status;
+}
+
 void Backend::select_warps(const std::vector<int> &wids) {
     // Create enough 32-bit masks to cover all warps
     size_t num_win = (state_.platinfo.num_total_warps + 31) / 32;
@@ -290,7 +341,8 @@ void Backend::select_warps(bool all) {
     return;
 }
 
-void Backend::select_dbg_thread(int g_wid, int tid) {
+
+void Backend::select_warp_thread(int g_wid, int tid) {
     if (g_wid < 0 || g_wid >= static_cast<int>(state_.platinfo.num_total_warps)) {
         log_->error("Invalid global warp ID " + std::to_string(g_wid));
         return;
@@ -300,14 +352,18 @@ void Backend::select_dbg_thread(int g_wid, int tid) {
         return;
     }
     int rc = 0;
-    rc = dmreg_wrfield(DMReg_t::DSELECT, "warpsel", g_wid);
+    uint32_t dselect = 0;
+    rc = dmreg_rd(DMReg_t::DSELECT, dselect);
     if (rc != 0) {
-        log_->error("Failed to write DSELECT.warpsel field (rc=" + std::to_string(rc) + ")");
+        log_->error("Failed to read DSELECT register (rc=" + std::to_string(rc) + ")");
         return;
     }
-    rc = dmreg_wrfield(DMReg_t::DSELECT, "threadsel", tid);
+
+    dselect = set_dmreg_field(DMReg_t::DSELECT, "warpsel", dselect, g_wid);
+    dselect = set_dmreg_field(DMReg_t::DSELECT, "threadsel", dselect, tid);
+    rc = dmreg_wr(DMReg_t::DSELECT, dselect);
     if (rc != 0) {
-        log_->error("Failed to write DSELECT.threadsel field (rc=" + std::to_string(rc) + ")");
+        log_->error("Failed to write DSELECT register (rc=" + std::to_string(rc) + ")");
         return;
     }
     state_.selected_wid = g_wid;
@@ -532,4 +588,99 @@ int Backend::dmreg_pollfield(const DMReg_t &reg, const std::string &fieldname, c
         log_->error("Failed to poll field: " + std::string(e.what()));
         return RCODE_INVALID_ARG;
     }
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// Warp Control Methods
+
+void Backend::halt_warps(const std::vector<int> &wids) {
+    if (!_check_transport_connected()) return;
+    
+    log_->info("Halting warps: " + std::to_string(wids.size()) + " warps");
+    
+    // Select the specified warps
+    select_warps(wids);
+    
+    // Send halt request
+    int rc = dmreg_wrfield(DMReg_t::DCTRL, "haltreq", 1);
+    if (rc != 0) {
+        log_->error("Failed to send halt request");
+        return;
+    }
+    
+    log_->debug("Halt request sent for selected warps");
+}
+
+void Backend::halt_warps() {
+    if (!_check_transport_connected()) return;
+    
+    log_->info("Halting all warps");
+    
+    // Select all warps
+    select_warps(true);
+    
+    // Send halt request
+    int rc = dmreg_wrfield(DMReg_t::DCTRL, "haltreq", 1);
+    if (rc != 0) {
+        log_->error("Failed to send halt request");
+        return;
+    }
+    
+    log_->debug("Halt request sent for all warps");
+}
+
+void Backend::resume_warps(const std::vector<int> &wids) {
+    if (!_check_transport_connected()) return;
+    
+    log_->info("Resuming warps: " + std::to_string(wids.size()) + " warps");
+    
+    // Select the specified warps
+    select_warps(wids);
+    
+    // Send resume request
+    int rc = dmreg_wrfield(DMReg_t::DCTRL, "resumereq", 1);
+    if (rc != 0) {
+        log_->error("Failed to send resume request");
+        return;
+    }
+    
+    log_->debug("Resume request sent for selected warps");
+}
+
+void Backend::resume_warps() {
+    if (!_check_transport_connected()) return;
+    
+    log_->info("Resuming all warps");
+    
+    // Select all warps
+    select_warps(true);
+    
+    // Send resume request
+    int rc = dmreg_wrfield(DMReg_t::DCTRL, "resumereq", 1);
+    if (rc != 0) {
+        log_->error("Failed to send resume request");
+        return;
+    }
+    
+    log_->debug("Resume request sent for all warps");
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// State Getters
+
+int Backend::get_selected_warp_thread(int &wid, int &tid, bool force_fetch) {
+    if (force_fetch) {
+        uint32_t dselect = 0;
+        int rc = dmreg_rd(DMReg_t::DSELECT, dselect);
+        if (rc != 0) {
+            log_->error("Failed to read DSELECT register (rc=" + std::to_string(rc) + ")");
+            return rc;
+        }
+        state_.selected_wid = static_cast<int>(extract_dmreg_field(DMReg_t::DSELECT, "warpsel", dselect));
+        state_.selected_tid = static_cast<int>(extract_dmreg_field(DMReg_t::DSELECT, "threadsel", dselect));
+    }
+
+    wid = state_.selected_wid;
+    tid = state_.selected_tid;
+    return RCODE_OK;
 }

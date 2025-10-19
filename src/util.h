@@ -44,3 +44,15 @@ std::string basename(const std::string &path);
 
 // Preprocess command line: strip comments/whitespace
 std::string preprocess_commandline(const std::string &input);
+
+template<typename T>
+std::string vecjoin(const std::vector<T> &vec, const std::string &sep = ",") {
+    std::string result;
+    for (size_t i = 0; i < vec.size(); ++i) {
+        result += std::to_string(vec[i]);
+        if (i != vec.size() - 1) {
+            result += sep;
+        }
+    }
+    return result;
+}

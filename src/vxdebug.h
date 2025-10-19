@@ -28,6 +28,14 @@ public:
     int cmd_transport(const std::vector<std::string>& args);
     int cmd_reset(const std::vector<std::string>& args);
     int cmd_info(const std::vector<std::string>& args);
+    int cmd_halt(const std::vector<std::string>& args);
+    int cmd_continue(const std::vector<std::string>& args);
+    int cmd_select(const std::vector<std::string>& args);
+    int cmd_stepi(const std::vector<std::string>& args);
+    int cmd_reg(const std::vector<std::string>& args);
+    int cmd_mem(const std::vector<std::string>& args);
+    int cmd_dmreg(const std::vector<std::string>& args);
+    int cmd_break(const std::vector<std::string>& args);
 
 private:
     Logger *log_;
@@ -41,6 +49,12 @@ private:
                          CommandHandler_t handler);
 
     int __execute_line(const std::string &raw_input);
+    
+    // prompt generation
+    std::string get_prompt() const;
+    
+    // utility functions
+    void parse_warp_id_list(const std::string &wids_str, std::vector<int> &wids);
     
     // command table
     struct Command_t {

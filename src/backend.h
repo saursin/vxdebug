@@ -40,6 +40,10 @@ public:
     // Retrieves platform information from the target
     void get_platform_info();
 
+    //----- Query Warp Status --------------
+    // Returns a map of warp ID to (halted status, PC value)
+    std::map<int, std::pair<bool, uint32_t>> get_warp_status(bool include_pc = true);
+    
     //----- Warp Selection -----------------
     // Select specific warps by their warp IDs
     void select_warps(const std::vector<int> &wids);
@@ -48,12 +52,28 @@ public:
     void select_warps(bool all);
 
     // Select a specific global warp and thread for debugging
-    void select_dbg_thread(int g_wid, int tid);
+    void select_warp_thread(int g_wid, int tid);
+
+    //----- Warp Control -----------------
+    // Halt specific warps
+    void halt_warps(const std::vector<int> &wids);
+    
+    // Halt all warps
+    void halt_warps();
+    
+    // Resume specific warps
+    void resume_warps(const std::vector<int> &wids);
+
+    // Resume all warps
+    void resume_warps();
 
     bool all_halted();
     bool any_halted();
     bool all_running();
     bool any_running();
+
+    //----- State Getters -----------------
+    int get_selected_warp_thread(int &wid, int &tid, bool force_fetch=false);
 
 
 private:

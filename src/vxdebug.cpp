@@ -5,6 +5,7 @@
 #include "backend.h"
 
 #include <sstream>
+#include <algorithm>
 
 #ifdef USE_READLINE
 #include <readline/readline.h>
@@ -27,6 +28,14 @@ VortexDebugger::VortexDebugger():
     register_command("source",    {"src"},       "Execute commands from a script file", &VortexDebugger::cmd_source);
     register_command("reset",     {"R"},         "Reset the target system", &VortexDebugger::cmd_reset);
     register_command("info",      {"i"},         "Display information about the target", &VortexDebugger::cmd_info);
+    register_command("halt",      {"h"},         "Halt warps", &VortexDebugger::cmd_halt);
+    register_command("continue",  {"c"},         "Continue/resume warps", &VortexDebugger::cmd_continue);
+    register_command("select",    {"sel"},       "Select current warp and thread", &VortexDebugger::cmd_select);
+    register_command("stepi",     {"s"},         "Single step instruction", &VortexDebugger::cmd_stepi);
+    register_command("reg",       {"r"},         "Register operations", &VortexDebugger::cmd_reg);
+    register_command("mem",       {"m"},         "Memory operations", &VortexDebugger::cmd_mem);
+    register_command("dmreg",     {"d"},         "Debug module register operations", &VortexDebugger::cmd_dmreg);
+    register_command("break",     {"b"},         "Breakpoint operations", &VortexDebugger::cmd_break);
 }
 
 VortexDebugger::~VortexDebugger() {
@@ -112,7 +121,8 @@ int VortexDebugger::start_cli() {
         std::string input;
     #ifdef USE_READLINE
         // Read input using readline for better UX
-        char* raw_line = readline(ANSI_GRN VXDBG_PROMPT ANSI_RST);
+        std::string prompt = get_prompt();
+        char* raw_line = readline(prompt.c_str());
         if (!raw_line) {
             std::cout << std::endl;
             break; // EOF
@@ -121,7 +131,7 @@ int VortexDebugger::start_cli() {
         free(raw_line);
     #else
         // Simple getline if readline not available
-        std::cout << ANSI_GRN VXDBG_PROMPT ANSI_RST;
+        std::cout << get_prompt();
         if (!std::getline(std::cin, input)) {
             std::cout << std::endl;
             break; // EOF
@@ -173,6 +183,30 @@ int VortexDebugger::__execute_line(const std::string &input) {
     return result;
 }
 
+////////////////////////////////////////////////////////////////////////////////
+// Utility Functions
+std::string VortexDebugger::get_prompt() const {
+    std::string prompt = ANSI_GRN;
+    
+    // Connection indicator
+    if (backend_->is_transport_connected()) {
+        prompt += "● ";  // Connected indicator
+    } else {
+        prompt += "○ ";  // Disconnected indicator  
+    }
+    
+    prompt += "vxdbg";
+    
+    // Add warp/thread selection info if available
+    int selected_wid, selected_tid;
+    backend_->get_selected_warp_thread(selected_wid, selected_tid);
+    if (selected_wid >= 0 && selected_tid >= 0) {
+        prompt += " [W" + std::to_string(selected_wid) + ":T" + std::to_string(selected_tid) + "]";
+    }
+    
+    prompt += "> " + std::string(ANSI_RST);
+    return prompt;
+}
 
 ////////////////////////////////////////////////////////////////////////////////
 // Command Handlers
@@ -297,17 +331,305 @@ int VortexDebugger::cmd_info(const std::vector<std::string>& args) {
 
     if (info_type == "warps") {
         log_->info("Retrieving warp status...");
-        bool all_halted = backend_->all_halted();
-        bool any_halted = backend_->any_halted();
-        bool all_running = backend_->all_running();
-        bool any_running = backend_->any_running();
-
+        auto warp_status = backend_->get_warp_status(true);
         std::string status = "Warp Status:\n";
-        status += "  All Halted: " + std::string(all_halted ? "Yes" : "No") + "\n";
-        status += "  Any Halted: " + std::string(any_halted ? "Yes" : "No") + "\n";
-        status += "  All Running: " + std::string(all_running ? "Yes" : "No") + "\n";
-        status += "  Any Running: " + std::string(any_running ? "Yes" : "No") + "\n";
+        for (const auto& [wid, status_pair] : warp_status) {
+            int coreid = wid / backend_->state_.platinfo.num_warps;
+            bool halted = status_pair.first;
+            uint32_t pc = status_pair.second;
+            status += strfmt(" (Core: %2d) Warp %2d : (%-7s) PC=0x%08X\n", coreid, wid, halted ? "Halted" : "Running", halted ? pc : 0);
+        }
         log_->info(status);
+    }
+    return 0;
+}
+
+int VortexDebugger::cmd_halt(const std::vector<std::string>& args) {
+    ArgParse::ArgumentParser parser("halt", "Halt warps on the target");
+    parser.add_argument({"-a", "--all"}, "Halt all warps", ArgParse::BOOL, "false");
+    parser.add_argument({"-w", "--wids"}, "List of warp IDs to halt", ArgParse::STR, "", false, "", {}, "", "+");
+    parser.add_argument({"-e", "--except"}, "Halt all warps except these IDs", ArgParse::STR, "", false, "", {}, "", "+");
+    int rc = parser.parse_args(args);
+    if (rc != 0) {return rc;}
+
+    bool halt_all = parser.get<bool>("all");
+    std::vector<std::string> wids_list = parser.get_list<std::string>("wids");
+    std::vector<std::string> except_list = parser.get_list<std::string>("except");
+
+    if (halt_all) {
+        log_->info("Halting all warps...");
+        backend_->halt_warps();
+    } else if (!wids_list.empty()) {
+        std::vector<int> wids;
+        try {
+            for (const auto& wid_str : wids_list) {
+                int wid = std::stoi(wid_str);
+                if (wid < 0 || static_cast<uint32_t>(wid) >= backend_->state_.platinfo.num_total_warps) {
+                    throw std::runtime_error("Invalid warp ID: " + wid_str);
+                }
+                wids.push_back(wid);
+            }
+        } catch (const std::runtime_error& e) {
+            log_->error("Error parsing warp IDs: " + std::string(e.what()));
+            return 1;
+        }
+
+        log_->info("Halting specific warps: " + vecjoin<int>(wids));
+        backend_->halt_warps(wids);
+    }
+    else if (!except_list.empty()) {
+        // Halt all warps except the specified ones
+        std::vector<int> except_wids;
+        try {
+            for (const auto& wid_str : except_list) {
+                int wid = std::stoi(wid_str);
+                if (wid < 0 || static_cast<uint32_t>(wid) >= backend_->state_.platinfo.num_total_warps) {
+                    throw std::runtime_error("Invalid warp ID: " + wid_str);
+                }
+                except_wids.push_back(wid);
+            }
+        } catch (const std::runtime_error& e) {
+            log_->error("Error parsing warp IDs: " + std::string(e.what()));
+            return 1;
+        }
+        
+        // Build list of all warps except the excluded ones
+        std::vector<int> wids_to_halt;
+        for (uint32_t wid = 0; wid < backend_->state_.platinfo.num_total_warps; wid++) {
+            if (std::find(except_wids.begin(), except_wids.end(), static_cast<int>(wid)) == except_wids.end()) {
+                wids_to_halt.push_back(static_cast<int>(wid));
+            }
+        }
+        
+        log_->info("Halting all warps except: " + vecjoin<int>(except_wids));
+        backend_->halt_warps(wids_to_halt);
+    } else {
+        log_->error("Must specify either --all, --wids, or --except");
+        return 1;
+    }
+
+    return 0;
+}
+
+int VortexDebugger::cmd_continue(const std::vector<std::string>& args) {
+    ArgParse::ArgumentParser parser("continue", "Continue/resume warp execution");
+    parser.add_argument({"-w", "--wids"}, "List of warp IDs to continue", ArgParse::STR, "", false, "", {}, "", "+");
+    parser.add_argument({"-e", "--except"}, "Continue all warps except these IDs", ArgParse::STR, "", false, "", {}, "", "+");
+    parser.add_argument({"-a", "--all"}, "Continue all warps", ArgParse::BOOL, "false");
+
+    int rc = parser.parse_args(args);
+    if (rc != 0) return rc;
+
+    bool continue_all = parser.get<bool>("all");
+    std::vector<std::string> wids_list = parser.get_list<std::string>("wids");
+    std::vector<std::string> except_list = parser.get_list<std::string>("except");
+
+    if (continue_all) {
+        log_->info("Continuing all warps...");
+        // For now, just use reset without halt - this will resume all warps
+        backend_->reset(false);
+    } 
+    else if (!wids_list.empty()) {
+        std::vector<int> wids;
+        try {
+            for (const auto& wid_str : wids_list) {
+                int wid = std::stoi(wid_str);
+                if (wid < 0 || static_cast<uint32_t>(wid) >= backend_->state_.platinfo.num_total_warps) {
+                    throw std::runtime_error("Invalid warp ID: " + wid_str);
+                }
+                wids.push_back(wid);
+            }
+        } catch (const std::runtime_error& e) {
+            log_->error("Error parsing warp IDs: " + std::string(e.what()));
+            return 1;
+        }
+        log_->info("Continuing specific warps: " + vecjoin<int>(wids));
+        backend_->resume_warps(wids);
+    }
+    else if (!except_list.empty()) {
+        // Continue all warps except the specified ones
+        std::vector<int> except_wids;
+        try {
+            for (const auto& wid_str : except_list) {
+                int wid = std::stoi(wid_str);
+                if (wid < 0 || static_cast<uint32_t>(wid) >= backend_->state_.platinfo.num_total_warps) {
+                    throw std::runtime_error("Invalid warp ID: " + wid_str);
+                }
+                except_wids.push_back(wid);
+            }
+        } catch (const std::runtime_error& e) {
+            log_->error("Error parsing warp IDs: " + std::string(e.what()));
+            return 1;
+        }
+        
+        // Build list of all warps except the excluded ones
+        std::vector<int> wids_to_continue;
+        for (uint32_t wid = 0; wid < backend_->state_.platinfo.num_total_warps; wid++) {
+            if (std::find(except_wids.begin(), except_wids.end(), static_cast<int>(wid)) == except_wids.end()) {
+                wids_to_continue.push_back(static_cast<int>(wid));
+            }
+        }
+        
+        log_->info("Continuing all warps except: " + vecjoin<int>(except_wids));
+        backend_->resume_warps(wids_to_continue);
+    } else {
+        log_->error("Must specify either --all, --wids, or --except");
+        return 1;
+    }
+
+    return 0;
+}
+
+int VortexDebugger::cmd_select(const std::vector<std::string>& args) {
+    ArgParse::ArgumentParser parser("select", "Select current warp and thread for debugging");
+    parser.add_argument({"wid"}, "Warp ID to select", ArgParse::INT, "0");
+    parser.add_argument({"tid"}, "Thread ID to select (optional)", ArgParse::INT, "0");
+
+    int rc = parser.parse_args(args);
+    if (rc != 0) return rc;
+
+    int wid = parser.get<int>("wid");
+    int tid = parser.get<int>("tid");
+
+    backend_->select_warp_thread(wid, tid);
+    log_->info("Selected warp " + std::to_string(wid) + ", thread " + std::to_string(tid));
+
+    return 0;
+}
+
+int VortexDebugger::cmd_stepi(const std::vector<std::string>& args) {
+    ArgParse::ArgumentParser parser("stepi", "Single step instruction execution");
+    
+    int rc = parser.parse_args(args);
+    if (rc != 0) return rc;
+
+    log_->info("Single step not yet implemented");
+    // TODO: Implement single step functionality
+    // This requires step control via debug module registers
+    
+    return 0;
+}
+
+int VortexDebugger::cmd_reg(const std::vector<std::string>& args) {
+    ArgParse::ArgumentParser parser("reg", "Register operations");
+    parser.add_argument({"operation"}, "Operation: read or write", ArgParse::STR, "", true, "", {"read", "write"});
+    parser.add_argument({"name"}, "Register name", ArgParse::STR, "");
+    parser.add_argument({"value"}, "Value to write (for write operations)", ArgParse::STR, "");
+
+    int rc = parser.parse_args(args);
+    if (rc != 0) return rc;
+
+    std::string operation = parser.get<std::string>("operation");
+    std::string name = parser.get<std::string>("name");
+    std::string value = parser.get<std::string>("value");
+
+    if (operation == "read") {
+        log_->info("Register read not yet implemented for: " + name);
+        // TODO: Implement register read
+    } else if (operation == "write") {
+        if (value.empty()) {
+            log_->error("Value required for write operation");
+            return 1;
+        }
+        log_->info("Register write not yet implemented: " + name + " = " + value);
+        // TODO: Implement register write
+    } else {
+        log_->error("Invalid operation. Use 'read' or 'write'");
+        return 1;
+    }
+
+    return 0;
+}
+
+int VortexDebugger::cmd_mem(const std::vector<std::string>& args) {
+    ArgParse::ArgumentParser parser("mem", "Memory operations");
+    parser.add_argument({"operation"}, "Operation: read or write", ArgParse::STR, "", true, "", {"read", "write"});
+    parser.add_argument({"address"}, "Memory address", ArgParse::STR, "");
+    parser.add_argument({"data"}, "Data/length for read, or data bytes for write", ArgParse::STR, "");
+
+    int rc = parser.parse_args(args);
+    if (rc != 0) return rc;
+
+    std::string operation = parser.get<std::string>("operation");
+    std::string address = parser.get<std::string>("address");
+    std::string data = parser.get<std::string>("data");
+
+    if (operation == "read") {
+        log_->info("Memory read not yet implemented: addr=" + address + ", len=" + data);
+        // TODO: Implement memory read
+    } else if (operation == "write") {
+        log_->info("Memory write not yet implemented: addr=" + address + ", data=" + data);
+        // TODO: Implement memory write
+    } else {
+        log_->error("Invalid operation. Use 'read' or 'write'");
+        return 1;
+    }
+
+    return 0;
+}
+
+int VortexDebugger::cmd_dmreg(const std::vector<std::string>& args) {
+    ArgParse::ArgumentParser parser("dmreg", "Debug module register operations");
+    parser.add_argument({"operation"}, "Operation: read or write", ArgParse::STR, "", true, "", {"read", "write"});
+    parser.add_argument({"name"}, "Register name", ArgParse::STR, "");
+    parser.add_argument({"value"}, "Value to write (for write operations)", ArgParse::STR, "");
+
+    int rc = parser.parse_args(args);
+    if (rc != 0) return rc;
+
+    std::string operation = parser.get<std::string>("operation");
+    std::string name = parser.get<std::string>("name");
+    std::string value = parser.get<std::string>("value");
+
+    if (operation == "read") {
+        log_->info("DM register read not yet implemented for: " + name);
+        // TODO: Implement DM register read
+    } else if (operation == "write") {
+        if (value.empty()) {
+            log_->error("Value required for write operation");
+            return 1;
+        }
+        log_->info("DM register write not yet implemented: " + name + " = " + value);
+        // TODO: Implement DM register write
+    } else {
+        log_->error("Invalid operation. Use 'read' or 'write'");
+        return 1;
+    }
+
+    return 0;
+}
+
+int VortexDebugger::cmd_break(const std::vector<std::string>& args) {
+    ArgParse::ArgumentParser parser("break", "Breakpoint operations");
+    parser.add_argument({"operation"}, "Operation: set, del, or ls", ArgParse::STR, "", true, "", {"set", "del", "ls"});
+    parser.add_argument({"address"}, "Breakpoint address", ArgParse::STR, "");
+
+    int rc = parser.parse_args(args);
+    if (rc != 0) return rc;
+
+    std::string operation = parser.get<std::string>("operation");
+    std::string address = parser.get<std::string>("address");
+
+    if (operation == "set") {
+        if (address.empty()) {
+            log_->error("Address required for set operation");
+            return 1;
+        }
+        log_->info("Breakpoint set not yet implemented at: " + address);
+        // TODO: Implement breakpoint set
+    } else if (operation == "del") {
+        if (address.empty()) {
+            log_->error("Address required for del operation");
+            return 1;
+        }
+        log_->info("Breakpoint delete not yet implemented at: " + address);
+        // TODO: Implement breakpoint delete
+    } else if (operation == "ls") {
+        log_->info("Breakpoint list not yet implemented");
+        // TODO: Implement breakpoint list
+    } else {
+        log_->error("Invalid operation. Use 'set', 'del', or 'ls'");
+        return 1;
     }
 
     return 0;
