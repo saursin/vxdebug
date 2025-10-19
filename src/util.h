@@ -11,7 +11,8 @@
 #define RCODE_INVALID_ARG       -4
 #define RCODE_BUFFER_OVRFLW     -5
 #define RCODE_COMM_ERR          -6
-#define RCODE_DISCONNECTED      -7
+#define RCODE_TRANSPORT_ERR     -7
+#define RCODE_NONESELECTED_ERR  -8
 
 // ANSI colors
 #define ANSI_RST "\033[0m"

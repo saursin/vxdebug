@@ -6,6 +6,7 @@
 
 #include <sstream>
 #include <algorithm>
+#include <unistd.h>
 
 #ifdef USE_READLINE
 #include <readline/readline.h>
@@ -32,6 +33,7 @@ VortexDebugger::VortexDebugger():
     register_command("continue",  {"c"},         "Continue/resume warps", &VortexDebugger::cmd_continue);
     register_command("select",    {"sel"},       "Select current warp and thread", &VortexDebugger::cmd_select);
     register_command("stepi",     {"s"},         "Single step instruction", &VortexDebugger::cmd_stepi);
+    register_command("inject",    {"inj"},       "Inject instruction", &VortexDebugger::cmd_inject);
     register_command("reg",       {"r"},         "Register operations", &VortexDebugger::cmd_reg);
     register_command("mem",       {"m"},         "Memory operations", &VortexDebugger::cmd_mem);
     register_command("dmreg",     {"d"},         "Debug module register operations", &VortexDebugger::cmd_dmreg);
@@ -189,7 +191,7 @@ std::string VortexDebugger::get_prompt() const {
     std::string prompt = ANSI_GRN;
     
     // Connection indicator
-    if (backend_->is_transport_connected()) {
+    if (backend_->transport_connected()) {
         prompt += "● ";  // Connected indicator
     } else {
         prompt += "○ ";  // Disconnected indicator  
@@ -297,8 +299,8 @@ int VortexDebugger::cmd_transport(const std::vector<std::string>& args) {
         if (ip.empty()) ip = DEFAULT_TCP_IP;
         if (port == 0)  port = DEFAULT_TCP_PORT;
 
-        backend_->setup_transport("tcp");
-        backend_->connect_transport({{"ip", ip}, {"port", std::to_string(port)}});
+        backend_->transport_setup("tcp");
+        backend_->transport_connect({{"ip", ip}, {"port", std::to_string(port)}});
         backend_->initialize();
     } else {
         log_->error("No transport type specified");
@@ -331,7 +333,8 @@ int VortexDebugger::cmd_info(const std::vector<std::string>& args) {
 
     if (info_type == "warps") {
         log_->info("Retrieving warp status...");
-        auto warp_status = backend_->get_warp_status(true);
+        std::map<int, std::pair<bool, uint32_t>> warp_status;
+        backend_->get_warp_status(warp_status, true);
         std::string status = "Warp Status:\n";
         for (const auto& [wid, status_pair] : warp_status) {
             int coreid = wid / backend_->state_.platinfo.num_warps;
@@ -499,72 +502,59 @@ int VortexDebugger::cmd_select(const std::vector<std::string>& args) {
 
 int VortexDebugger::cmd_stepi(const std::vector<std::string>& args) {
     ArgParse::ArgumentParser parser("stepi", "Single step instruction execution");
+    parser.add_argument({"-c", "--count"}, "Number of steps to execute", ArgParse::INT, "1");
     
     int rc = parser.parse_args(args);
     if (rc != 0) return rc;
 
-    log_->info("Single step not yet implemented");
-    // TODO: Implement single step functionality
-    // This requires step control via debug module registers
+    int count = parser.get<int>("count");
     
+    for (int i = 0; i < count; i++) {
+        log_->info("Executing single step " + std::to_string(i + 1) + "/" + std::to_string(count));
+        
+        rc = backend_->step_warp();
+        if (rc != 0) {
+            log_->error("Single step failed");
+            return 1;
+        }
+    }
+    return 0;
+}
+
+int VortexDebugger::cmd_inject(const std::vector<std::string>& args) {
+    ArgParse::ArgumentParser parser("inject", "Inject instruction into selected warp/thread");
+    parser.add_argument({"--asm"}, "Assembly instruction to assemble and inject (alternative to raw instruction)", ArgParse::STR, "");
+    parser.add_argument({"instruction"}, "32-bit instruction value (hex or decimal)", ArgParse::STR, "", true);
+        
+    int rc = parser.parse_args(args);
+    if (rc != 0) return rc;
+
+    // todo:
     return 0;
 }
 
 int VortexDebugger::cmd_reg(const std::vector<std::string>& args) {
     ArgParse::ArgumentParser parser("reg", "Register operations");
-    parser.add_argument({"operation"}, "Operation: read or write", ArgParse::STR, "", true, "", {"read", "write"});
+    parser.add_argument({"operation"}, "Operation: read(r), write(w)", ArgParse::STR, "", true, "", {"r", "w"});
     parser.add_argument({"name"}, "Register name", ArgParse::STR, "");
     parser.add_argument({"value"}, "Value to write (for write operations)", ArgParse::STR, "");
-
     int rc = parser.parse_args(args);
     if (rc != 0) return rc;
 
-    std::string operation = parser.get<std::string>("operation");
-    std::string name = parser.get<std::string>("name");
-    std::string value = parser.get<std::string>("value");
-
-    if (operation == "read") {
-        log_->info("Register read not yet implemented for: " + name);
-        // TODO: Implement register read
-    } else if (operation == "write") {
-        if (value.empty()) {
-            log_->error("Value required for write operation");
-            return 1;
-        }
-        log_->info("Register write not yet implemented: " + name + " = " + value);
-        // TODO: Implement register write
-    } else {
-        log_->error("Invalid operation. Use 'read' or 'write'");
-        return 1;
-    }
+    // TODO
 
     return 0;
 }
 
 int VortexDebugger::cmd_mem(const std::vector<std::string>& args) {
     ArgParse::ArgumentParser parser("mem", "Memory operations");
-    parser.add_argument({"operation"}, "Operation: read or write", ArgParse::STR, "", true, "", {"read", "write"});
+    parser.add_argument({"operation"}, "Operation: read(r), write(w)", ArgParse::STR, "", true, "", {"r", "w"});
     parser.add_argument({"address"}, "Memory address", ArgParse::STR, "");
-    parser.add_argument({"data"}, "Data/length for read, or data bytes for write", ArgParse::STR, "");
-
+    parser.add_argument({"length"}, "Length in bytes (for read)", ArgParse::INT, "4");
+    parser.add_argument({"data"}, "Data to write (for write operations)", ArgParse::STR, "");
     int rc = parser.parse_args(args);
     if (rc != 0) return rc;
-
-    std::string operation = parser.get<std::string>("operation");
-    std::string address = parser.get<std::string>("address");
-    std::string data = parser.get<std::string>("data");
-
-    if (operation == "read") {
-        log_->info("Memory read not yet implemented: addr=" + address + ", len=" + data);
-        // TODO: Implement memory read
-    } else if (operation == "write") {
-        log_->info("Memory write not yet implemented: addr=" + address + ", data=" + data);
-        // TODO: Implement memory write
-    } else {
-        log_->error("Invalid operation. Use 'read' or 'write'");
-        return 1;
-    }
-
+    // TODO:
     return 0;
 }
 

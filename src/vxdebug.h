@@ -32,6 +32,7 @@ public:
     int cmd_continue(const std::vector<std::string>& args);
     int cmd_select(const std::vector<std::string>& args);
     int cmd_stepi(const std::vector<std::string>& args);
+    int cmd_inject(const std::vector<std::string>& args);
     int cmd_reg(const std::vector<std::string>& args);
     int cmd_mem(const std::vector<std::string>& args);
     int cmd_dmreg(const std::vector<std::string>& args);

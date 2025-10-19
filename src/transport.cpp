@@ -286,7 +286,7 @@ int TCPTransport::_recv_buf(std::string &out) {
             
             if (!client_->is_connected()) {
                 log_->error("Client disconnected while waiting for data");
-                return RCODE_DISCONNECTED;
+                return RCODE_TRANSPORT_ERR;
             }
             
             // Small delay before retrying
