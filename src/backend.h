@@ -23,6 +23,10 @@ public:
     Backend();
     ~Backend();
 
+    //==========================================================================
+    // Transport management
+    //==========================================================================
+
     // Setup transport
     int transport_setup(const std::string &type);
 
@@ -34,7 +38,7 @@ public:
     bool transport_connected() const;
 
     // Initialization
-    int initialize();
+    int initialize(bool quiet=false);
 
     //==========================================================================
     // API Methods
@@ -45,7 +49,7 @@ public:
     int wake_dm();
 
     // Resets the target system, optionally halting all warps after reset
-    int reset(bool halt_warps=false);
+    int reset_platform(bool halt=false);
 
     // Retrieves platform information from the target
     int fetch_platform_info();
@@ -63,6 +67,7 @@ public:
     
     // Get selected warp and thread IDs
     int get_selected_warp_thread(int &wid, int &tid, bool force_fetch = false);
+    int get_selected_warp_pc(uint32_t &pc, bool force_fetch = false);
 
 
     //----- Query Warp Status --------------
@@ -97,7 +102,8 @@ public:
 
     // Inject a single instruction into the selected warp/thread
     int inject_instruction(uint32_t instruction);
-   
+    int inject_instruction(const std::string &asm_instr);
+    
     
     //----- Platform State Query/Update ----
     // Get architecture register value
@@ -131,6 +137,7 @@ private:
     struct State_t {
         int selected_wid = -1;
         int selected_tid = -1;
+        uint32_t selected_warp_pc = 0;
 
         struct PlatformInfo {
             uint32_t platform_id;
@@ -142,6 +149,7 @@ private:
             uint32_t num_total_cores;
             uint32_t num_total_warps;
             uint32_t num_total_threads;
+            uint32_t misa;
         } platinfo;
 
     } state_;

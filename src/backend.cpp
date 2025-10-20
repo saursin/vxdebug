@@ -4,7 +4,7 @@
 #include "util.h"
 #include <unistd.h>
 
-#include "rvdefs.h"
+#include "riscv.h"
 
 #ifndef VORTEX_PLATFORMID
     #define VORTEX_PLATFORMID 0x1
@@ -15,19 +15,6 @@
 #endif
 
 #define msleep(x) usleep(x * 1000)
-
-Backend::Backend(): 
-    transport_(nullptr),
-    transport_type_(""),
-    log_(new Logger("Backend", 4))
-{}
-
-Backend::~Backend() {
-    if (transport_) 
-        delete transport_;
-    if (log_)
-        delete log_;
-}
 
 #define CHECK_ERR(stmt, msg) \
     do { \
@@ -51,9 +38,26 @@ Backend::~Backend() {
     }
 
 //==============================================================================
+Backend::Backend(): 
+    transport_(nullptr),
+    transport_type_(""),
+    log_(new Logger("Backend", 4))
+{
+    if (!rv_toolchain_check()) {
+        log_->warn("RISC-V toolchain not found in PATH. Instruction inject and all dependent functionality will not work");
+    }
+}
+
+Backend::~Backend() {
+    if (transport_) 
+        delete transport_;
+    if (log_)
+        delete log_;
+}
+
+//==============================================================================
 // Transport management
 //==============================================================================
-
 int Backend::transport_setup(const std::string &type) {
     if (transport_) {
         log_->warn("Transport already set up. Destroying existing transport.");
@@ -61,7 +65,6 @@ int Backend::transport_setup(const std::string &type) {
         transport_ = nullptr;
         transport_type_ = "";
     }
-
     transport_type_ = type;
 
     if (type == "tcp") {
@@ -111,20 +114,27 @@ bool Backend::transport_connected() const {
 // Initialization
 //==============================================================================
 
-int Backend::initialize() {
+int Backend::initialize(bool quiet) {
     CHECK_TRANSPORT();
     log_->info("Initializing backend...");
 
     // Try to Wake DM
+    log_->debug("Querying debug module status");
     CHECK_ERR(wake_dm(), "Failed to wake DM");
 
+    // Select warp 0, thread 0 by default
+    log_->debug("Assuming selected warp/thread = (0,0)");
+    state_.selected_wid = 0;
+    state_.selected_tid = 0;
+    
     // Get platform info
+    log_->debug("Fetching platform information...");
     CHECK_ERR(fetch_platform_info(), "Failed to fetch platform info");
 
     log_->debug("Backend initialized!");
 
     // Print platform info
-    _print_platform_info();
+    if (!quiet) _print_platform_info();
     return RCODE_OK;
 }
 
@@ -140,7 +150,6 @@ int Backend::wake_dm() {
     // Check if ndmreset is set
     uint32_t ndmreset = 0;
     CHECK_ERR(dmreg_rdfield(DMReg_t::DCTRL, "ndmreset", ndmreset), "Failed to read DCTRL.ndmreset field");
-
     if (ndmreset) {
         // Wait for ndmreset to low
         log_->debug("Waiting for DCTRL.ndmreset to clear...");
@@ -170,7 +179,7 @@ int Backend::wake_dm() {
     return RCODE_OK;
 }
 
-int Backend::reset(bool halt_warps) {
+int Backend::reset_platform(bool halt_warps) {
     // Issue system reset via DCTRL.ndmreset
     log_->info("Issuing system reset...");
     if (halt_warps) {
@@ -212,8 +221,7 @@ int Backend::reset(bool halt_warps) {
     log_->info("System reset complete.");
     
     // Re-initialize backend after reset
-    CHECK_ERR(initialize(), "Failed to re-initialize backend after reset");
-
+    CHECK_ERR(initialize(true), "Failed to re-initialize backend after reset");
     return RCODE_OK;
 }
 
@@ -226,10 +234,16 @@ int Backend::fetch_platform_info() {
     state_.platinfo.num_clusters    = extract_dmreg_field(DMReg_t::PLATFORM, "numclusters", platform);
     state_.platinfo.num_cores       = extract_dmreg_field(DMReg_t::PLATFORM, "numcores", platform);
     state_.platinfo.num_warps       = extract_dmreg_field(DMReg_t::PLATFORM, "numwarps", platform);
-    state_.platinfo.num_threads     = extract_dmreg_field(DMReg_t::PLATFORM, "numthreads", platform);
+    state_.platinfo.num_threads     = 2*extract_dmreg_field(DMReg_t::PLATFORM, "numthreads", platform);
     state_.platinfo.num_total_cores = state_.platinfo.num_clusters * state_.platinfo.num_cores;
     state_.platinfo.num_total_warps = state_.platinfo.num_total_cores * state_.platinfo.num_warps;
     state_.platinfo.num_total_threads = state_.platinfo.num_total_warps * state_.platinfo.num_threads;
+
+    // Obtain ISA Information
+    uint32_t misa = 0;
+    CHECK_ERR(reg_csr_read(RV_CSR_MISA, misa), "Failed to read MISA CSR");
+    state_.platinfo.misa = misa;
+
     return RCODE_OK;
 }
 
@@ -260,7 +274,6 @@ int Backend::select_warps(const std::vector<int> &wids) {
         // Write the mask
         CHECK_ERR(dmreg_wrfield(DMReg_t::WMASK, "mask", win_masks[i]), "Failed to write WMASK.mask field");
     }
-    log_->info("Selected " + std::to_string(wids.size()) + " warps.");
     return RCODE_OK;
 }
 
@@ -268,8 +281,7 @@ int Backend::select_warps(bool all) {
     size_t num_win = (state_.platinfo.num_total_warps + 31) / 32;
     for (size_t i = 0; i < num_win; ++i) {
         CHECK_ERR(dmreg_wrfield(DMReg_t::DSELECT, "winsel", i), "Failed to write DSELECT.winsel field");
-
-        CHECK_ERR(dmreg_wrfield(DMReg_t::WMASK, "mask", all ? 0xFFFFFFFF : 0x00000000), "Failed to write WMASK.mask field");
+        CHECK_ERR(dmreg_wr(DMReg_t::WMASK, all ? 0xFFFFFFFF : 0x00000000), "Failed to write WMASK.mask field");
     }
     return RCODE_OK;
 }
@@ -292,7 +304,7 @@ int Backend::select_warp_thread(int g_wid, int tid) {
     CHECK_ERR(dmreg_wr(DMReg_t::DSELECT, dselect), "Failed to write DSELECT register");
     state_.selected_wid = g_wid;
     state_.selected_tid = tid;
-    log_->info("Selected warp " + std::to_string(g_wid) + ", thread " + std::to_string(tid) + " for debugging.");
+    log_->debug("Selected warp " + std::to_string(g_wid) + ", thread " + std::to_string(tid) + " for debugging.");
     return RCODE_OK;
 }
 
@@ -303,9 +315,18 @@ int Backend::get_selected_warp_thread(int &wid, int &tid, bool force_fetch) {
         state_.selected_wid = static_cast<int>(extract_dmreg_field(DMReg_t::DSELECT, "warpsel", dselect));
         state_.selected_tid = static_cast<int>(extract_dmreg_field(DMReg_t::DSELECT, "threadsel", dselect));
     }
-
     wid = state_.selected_wid;
     tid = state_.selected_tid;
+    return RCODE_OK;
+}
+
+int Backend::get_selected_warp_pc(uint32_t &pc, bool force_fetch) {
+    if (force_fetch) {
+        uint32_t dpc = 0;
+        CHECK_ERR(dmreg_rd(DMReg_t::DPC, dpc), "Failed to read DPC register");
+        state_.selected_warp_pc = dpc;
+    }
+    pc = state_.selected_warp_pc;
     return RCODE_OK;
 }
 
@@ -425,7 +446,7 @@ int Backend::halt_warps() {
 }
 
 int Backend::resume_warps(const std::vector<int> &wids) {
-    log_->info("Resuming warps: " + std::to_string(wids.size()) + " warps");
+    log_->info("Resuming warps: " + vecjoin<int>(wids));
     
     // Select the specified warps
     CHECK_ERR(select_warps(wids), "Failed to select warps for resuming");
@@ -475,6 +496,7 @@ int Backend::step_warp() {
     uint32_t warp_pc;
     CHECK_ERR(dmreg_rd(DMReg_t::DPC, warp_pc), "Failed to read DPC register after step");
     log_->info(strfmt("Stepped warp %d to PC=0x%08X", state_.selected_wid, warp_pc));
+    state_.selected_warp_pc = warp_pc;
     
     return RCODE_OK;
 }
@@ -498,53 +520,80 @@ int Backend::inject_instruction(uint32_t instruction) {
     return RCODE_OK;
 }
 
+int Backend::inject_instruction(const std::string &asm_instr) {
+    CHECK_SELECTED();
+    // Assemble instruction
+    auto instrs = rv_asm({asm_instr});
+    if (instrs.size() != 1) {
+        log_->error("Failed to assemble instruction: " + asm_instr);
+        return RCODE_ERROR;
+    }
+    // Inject instruction
+    CHECK_ERR(inject_instruction(instrs[0]), "Failed to inject instruction: " + asm_instr);
+    return RCODE_OK;
+}
+
 
 ////////////////////////////////////////////////////////////////////////////////
 // Platform Query/Update Methods
 
-int reg_arch_read(const uint32_t regnum, uint32_t &value) {
+int Backend::reg_arch_read(const uint32_t regnum, uint32_t &value) {
     (void)regnum;
     (void)value;
     return RCODE_OK;
 }
 
 // Set the architecture register value
-int reg_arch_write(const uint32_t regnum, const uint32_t value) {
+int Backend::reg_arch_write(const uint32_t regnum, const uint32_t value) {
     (void)regnum;
     (void)value;
     return RCODE_OK;
 }
 
 // Get the CSR register value
-int reg_csr_read(const uint32_t regaddr, uint32_t &value) {
-    (void)regaddr;
-    (void)value;
+int Backend::reg_csr_read(const uint32_t regaddr, uint32_t &value) {
+    // Inject instruction to read t0, in dscratch
+    uint32_t t0 = 0;
+    CHECK_ERR(inject_instruction(strfmt("csrw %d, t0", RV_CSR_VX_DSCRATCH)), "Failed to inject instruction");
+    CHECK_ERR(dmreg_rd(DMReg_t::DSCRATCH, t0), "Failed to read DSCRATCH register");
+
+    // Inject instruction to read the CSR into t0
+    CHECK_ERR(inject_instruction(strfmt("csrr t0, %d", regaddr)), "Failed to inject instruction");
+    // Inject instruction to write t0 into dscratch
+    CHECK_ERR(inject_instruction(strfmt("csrw %d, t0", RV_CSR_VX_DSCRATCH)), "Failed to inject instruction");
+    CHECK_ERR(dmreg_rd(DMReg_t::DSCRATCH, value), "Failed to read DSCRATCH register");
+
+    // Inject instruction to restore t0
+    CHECK_ERR(dmreg_wr(DMReg_t::DSCRATCH, t0), "Failed to write DSCRATCH register");
+    CHECK_ERR(inject_instruction(strfmt("csrr t0, %d", RV_CSR_VX_DSCRATCH)), "Failed to inject instruction");
+
+    log_->debug(strfmt("Read CSR[%s] => 0x%08X", std::to_string(regaddr).c_str(), value));
     return RCODE_OK;
 }
 
 // Set the CSR register value
-int reg_csr_write(const uint32_t regaddr, const uint32_t value) {
+int Backend::reg_csr_write(const uint32_t regaddr, const uint32_t value) {
     (void)regaddr;
     (void)value;
     return RCODE_OK;
 }
 
 // Read processor register
-int read_register(const std::string &reg_name, uint32_t &value) {
+int Backend::read_register(const std::string &reg_name, uint32_t &value) {
     (void)reg_name;
     (void)value;
     return RCODE_OK;
 }
 
 // Write processor register
-int write_register(const std::string &reg_name, uint32_t value) {
+int Backend::write_register(const std::string &reg_name, uint32_t value) {
     (void)reg_name;
     (void)value;
     return RCODE_OK;
 }
 
 // Read memory
-int mem_read(const uint32_t address, const uint32_t size, std::vector<uint32_t> &data) {
+int Backend::mem_read(const uint32_t address, const uint32_t size, std::vector<uint32_t> &data) {
     (void)address;
     (void)size;
     (void)data;
@@ -552,7 +601,7 @@ int mem_read(const uint32_t address, const uint32_t size, std::vector<uint32_t> 
 }
 
 // Write memory
-int mem_write(const uint32_t address, const uint32_t size, const std::vector<uint32_t> &data) {
+int Backend::mem_write(const uint32_t address, const uint32_t size, const std::vector<uint32_t> &data) {
     (void)address;
     (void)size;
     (void)data;
@@ -565,7 +614,9 @@ int mem_write(const uint32_t address, const uint32_t size, const std::vector<uin
 
 void Backend::_print_platform_info() const {
     std::string info;
-    info += strfmt("  Platform ID   : 0x%08X (%s)\n", state_.platinfo.platform_id, state_.platinfo.platform_name.c_str());
+    info += strfmt("  Platform ID   : 0x%08X\n", state_.platinfo.platform_id);
+    info += strfmt("  Platform Name : %s\n", state_.platinfo.platform_name.c_str());
+    info += strfmt("  ISA           : %s (%s)\n", rv_isa_string(state_.platinfo.misa).c_str(), rv_isa_string(state_.platinfo.misa, true).c_str());
     info += strfmt("  Clusters      : %u\n", state_.platinfo.num_clusters);
     info += strfmt("  Cores/Cluster : %u\n", state_.platinfo.num_cores);
     info += strfmt("  Warps/Core    : %u\n", state_.platinfo.num_warps);

@@ -46,6 +46,7 @@ std::string basename(const std::string &path);
 // Preprocess command line: strip comments/whitespace
 std::string preprocess_commandline(const std::string &input);
 
+// Join vector elements into a string with a separator
 template<typename T>
 std::string vecjoin(const std::vector<T> &vec, const std::string &sep = ",") {
     std::string result;

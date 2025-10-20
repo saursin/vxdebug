@@ -227,9 +227,13 @@ std::string VortexDebugger::get_prompt() const {
     
     // Add warp/thread selection info if available
     int selected_wid, selected_tid;
-    backend_->get_selected_warp_thread(selected_wid, selected_tid);
+    backend_->get_selected_warp_thread(selected_wid, selected_tid, true);
+
+    uint32_t selected_pc;
+    backend_->get_selected_warp_pc(selected_pc, true);
+    
     if (selected_wid >= 0 && selected_tid >= 0) {
-        prompt += " [W" + std::to_string(selected_wid) + ":T" + std::to_string(selected_tid) + "]";
+        prompt += strfmt(" [W%d:T%d, PC=0x%08X]", selected_wid, selected_tid, selected_pc);
     }
     
     prompt += "> " + std::string(ANSI_RST);
@@ -344,7 +348,7 @@ int VortexDebugger::cmd_reset(const std::vector<std::string>& args) {
     bool halt_warps = parser.get<bool>("halt");
     
     log_->info("Resetting target" + std::string(halt_warps ? " and halting warps" : ""));    
-    backend_->reset(halt_warps);
+    backend_->reset_platform(halt_warps);
     return 0;
 }
 
