@@ -121,7 +121,7 @@ int Backend::initialize() {
     // Get platform info
     CHECK_ERR(fetch_platform_info(), "Failed to fetch platform info");
 
-    log_->info("Backend initialized!");
+    log_->debug("Backend initialized!");
 
     // Print platform info
     _print_platform_info();
@@ -412,7 +412,14 @@ int Backend::halt_warps() {
     
     // Send halt request
     CHECK_ERR(dmreg_wrfield(DMReg_t::DCTRL, "haltreq", 1), "Failed to send halt request");
-    
+
+    // Poll until all warps halted
+    uint32_t allhalted;
+    CHECK_ERR(dmreg_pollfield(DMReg_t::DCTRL, "allhalted", 1, &allhalted), "Failed to poll halt status");
+    if (allhalted == 0) {
+        log_->warn("Not all warps halted after halt request");
+    }
+
     log_->debug("Halt request sent for all warps");
     return RCODE_OK;
 }
@@ -438,7 +445,16 @@ int Backend::resume_warps() {
 
     // Send resume request
     CHECK_ERR(dmreg_wrfield(DMReg_t::DCTRL, "resumereq", 1), "Failed to send resume request");
-    log_->debug("Resume request sent for all warps");
+
+    // Poll until all warps running
+    uint32_t allrunning;
+    CHECK_ERR(dmreg_pollfield(DMReg_t::DCTRL, "allrunning", 1, &allrunning), "Failed to poll resume status");
+    if(allrunning == 0) {
+        log_->warn("Not all warps running after resume request");
+    }
+    else {
+        log_->info("All warps resumed successfully");
+    }
     return RCODE_OK;
 }
 
@@ -633,6 +649,10 @@ int Backend::dmreg_pollfield(const DMReg_t &reg, const std::string &fieldname, c
                         int max_retries, int delay_ms) {
     CHECK_TRANSPORT();
     const auto& rinfo = get_dmreg(reg);
+    
+    // Use default values if not provided
+    if (max_retries == -1) max_retries = poll_retries_;
+    if (delay_ms == -1) delay_ms = poll_delay_ms_;
     
     try {
         const FieldInfo_t* finfo = get_dmreg_field(reg, fieldname);

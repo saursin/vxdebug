@@ -7,10 +7,17 @@
 #include <sstream>
 #include <algorithm>
 #include <unistd.h>
+#include <cstdlib>
 
 #ifdef USE_READLINE
 #include <readline/readline.h>
 #include <readline/history.h>
+    #ifndef HISTORY_FILE
+        #define HISTORY_FILE ".vxdbg_history"
+    #endif
+    #ifndef MAX_HISTORY_ENTRIES
+        #define MAX_HISTORY_ENTRIES 1000
+    #endif
 #endif
 
 #define VXDBG_PROMPT "vxdbg> "
@@ -104,7 +111,11 @@ int VortexDebugger::execute_script(const std::string &filepath) {
         line = preprocess_commandline(line);
         if (line.empty()) continue; // skip blank lines
         printf(ANSI_YLW "%s:%d: %s\n" ANSI_RST, file_basename.c_str(), line_num, line.c_str());
-        __execute_line(line);
+        int rc = __execute_line(line);
+        if (rc != 0) {
+            log_->error(strfmt("Script execution halted due to error at %s:%d", file_basename.c_str(), line_num));
+            break;
+        }
     }
 
     script_file.close();
@@ -115,6 +126,15 @@ int VortexDebugger::execute_script(const std::string &filepath) {
 int VortexDebugger::start_cli() {
     log_->info("Starting interactive CLI...");
     log_->info("Type 'help' for available commands, 'exit' to quit");
+
+#ifdef USE_READLINE
+    // Initialize readline history
+    using_history();
+    
+    // Try to read existing history file
+    std::string history_file = HISTORY_FILE;
+    read_history(history_file.c_str());
+#endif
 
     running_ = RUNNING;
     std::string prev_input;
@@ -150,13 +170,19 @@ int VortexDebugger::start_cli() {
         #endif
         }
 
-        prev_input = input;
-
         input = preprocess_commandline(input);
         if (input.empty()) continue; // skip blank lines
 
         __execute_line(input);
     }
+
+#ifdef USE_READLINE
+    // Save history before exiting
+    write_history(history_file.c_str());
+    
+    // Limit history file size to last 1000 entries
+    history_truncate_file(history_file.c_str(), MAX_HISTORY_ENTRIES);
+#endif
 
     if(running_ != EXIT) running_ = STOPPED;
     return 0;
@@ -213,7 +239,18 @@ std::string VortexDebugger::get_prompt() const {
 ////////////////////////////////////////////////////////////////////////////////
 // Command Handlers
 int VortexDebugger::cmd_help(const std::vector<std::string>& args) {
-    if (args.size() == 1) {
+    ArgParse::ArgumentParser parser("help", "Show help for commands");
+    parser.add_argument({"command"}, "Command to show help for", ArgParse::STR, "");
+    int rc = parser.parse_args(args);
+    if (rc != 0) {return rc;}
+
+    const std::string& command = parser.get<std::string>("command");
+
+    if (!command.empty()) {
+        // Help for specific command
+        execute_command(command, {command, "--help"});
+    }
+    else {
         // Help for all commands - show primary commands with aliases
         std::string out;
         
@@ -241,19 +278,7 @@ int VortexDebugger::cmd_help(const std::vector<std::string>& args) {
         
         log_->info("Available commands:\n" + out);
     }
-    else if (args.size() == 2) {
-        // Help for specific command
-        const std::string& cmd = args[1];
-
-        // If the command is not found, log an error
-        if (execute_command(cmd, {cmd, "--help"}) == -1) {
-            log_->error("No help available for command: " + cmd);
-        }
-    } else {
-        log_->error("Usage: help [command]");
-        return 1;
-    }
-    return 0;
+    return RCODE_OK;
 }
 
 int VortexDebugger::cmd_exit(const std::vector<std::string>& args) {
@@ -350,13 +375,13 @@ int VortexDebugger::cmd_info(const std::vector<std::string>& args) {
 int VortexDebugger::cmd_halt(const std::vector<std::string>& args) {
     ArgParse::ArgumentParser parser("halt", "Halt warps on the target");
     parser.add_argument({"-a", "--all"}, "Halt all warps", ArgParse::BOOL, "false");
-    parser.add_argument({"-w", "--wids"}, "List of warp IDs to halt", ArgParse::STR, "", false, "", {}, "", "+");
+    parser.add_argument({"-w", "--wid"}, "List of warp IDs to halt", ArgParse::STR, "", false, "", {}, "", "+");
     parser.add_argument({"-e", "--except"}, "Halt all warps except these IDs", ArgParse::STR, "", false, "", {}, "", "+");
     int rc = parser.parse_args(args);
     if (rc != 0) {return rc;}
 
     bool halt_all = parser.get<bool>("all");
-    std::vector<std::string> wids_list = parser.get_list<std::string>("wids");
+    std::vector<std::string> wids_list = parser.get_list<std::string>("wid");
     std::vector<std::string> except_list = parser.get_list<std::string>("except");
 
     if (halt_all) {
@@ -416,7 +441,7 @@ int VortexDebugger::cmd_halt(const std::vector<std::string>& args) {
 
 int VortexDebugger::cmd_continue(const std::vector<std::string>& args) {
     ArgParse::ArgumentParser parser("continue", "Continue/resume warp execution");
-    parser.add_argument({"-w", "--wids"}, "List of warp IDs to continue", ArgParse::STR, "", false, "", {}, "", "+");
+    parser.add_argument({"-w", "--wid"}, "List of warp IDs to continue", ArgParse::STR, "", false, "", {}, "", "+");
     parser.add_argument({"-e", "--except"}, "Continue all warps except these IDs", ArgParse::STR, "", false, "", {}, "", "+");
     parser.add_argument({"-a", "--all"}, "Continue all warps", ArgParse::BOOL, "false");
 
@@ -424,13 +449,12 @@ int VortexDebugger::cmd_continue(const std::vector<std::string>& args) {
     if (rc != 0) return rc;
 
     bool continue_all = parser.get<bool>("all");
-    std::vector<std::string> wids_list = parser.get_list<std::string>("wids");
+    std::vector<std::string> wids_list = parser.get_list<std::string>("wid");
     std::vector<std::string> except_list = parser.get_list<std::string>("except");
 
     if (continue_all) {
         log_->info("Continuing all warps...");
-        // For now, just use reset without halt - this will resume all warps
-        backend_->reset(false);
+        backend_->resume_warps();
     } 
     else if (!wids_list.empty()) {
         std::vector<int> wids;
@@ -476,7 +500,7 @@ int VortexDebugger::cmd_continue(const std::vector<std::string>& args) {
         log_->info("Continuing all warps except: " + vecjoin<int>(except_wids));
         backend_->resume_warps(wids_to_continue);
     } else {
-        log_->error("Must specify either --all, --wids, or --except");
+        log_->error("Must specify either --all, --wid a [b c...], or --except a [b c...]");
         return 1;
     }
 
