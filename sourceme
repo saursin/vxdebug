@@ -1,0 +1,5 @@
+VXDEBUG=$(dirname -- "$(readlink -f "${BASH_SOURCE}")")
+alias vxdbg=$VXDEBUG/build/vxdebug
+
+# Load riscv-toolchain
+# module load riscv 

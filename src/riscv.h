@@ -10,21 +10,61 @@
     #define RISCV_TOOLCHAIN_PREFIX "riscv64-unknown-elf"
 #endif
 
-enum RVRegType_t {RV_GPR, RV_CSR};
+enum class RVRegType_t {NONE, GPR, CSR};
 
 struct RVRegInfo_t {
     std::string_view name;
+    std::string_view abi_name;
     uint32_t addr;
 };
 
+
+////////////////////////////////////////////////////////////////////////////////
+// RISC-V General Purpose Registers
+////////////////////////////////////////////////////////////////////////////////
 constexpr RVRegInfo_t RV_GPRS[] = {
-    {"x0",  0},   {"x1",  1},   {"x2",  2},   {"x3",  3},   {"x4",  4},   {"x5",  5},   {"x6",  6},   {"x7",  7},
-    {"x8",  8},   {"x9",  9},   {"x10", 10},  {"x11", 11},  {"x12", 12},  {"x13", 13},  {"x14", 14},  {"x15", 15},
-    {"x16", 16},  {"x17", 17},  {"x18", 18},  {"x19", 19},  {"x20", 20},  {"x21", 21},  {"x22", 22},  {"x23", 23},
-    {"x24", 24},  {"x25", 25},  {"x26", 26},  {"x27", 27},  {"x28", 28},  {"x29", 29},  {"x30", 30},  {"x31", 31}
+    {"x0",  "zero",  0},
+    {"x1",  "ra",    1},
+    {"x2",  "sp",    2},
+    {"x3",  "gp",    3},
+    {"x4",  "tp",    4},
+    {"x5",  "t0",    5},
+    {"x6",  "t1",    6},
+    {"x7",  "t2",    7},
+    {"x8",  "s0",    8},
+    {"x9",  "s1",    9},
+    {"x10", "a0",   10},
+    {"x11", "a1",   11},
+    {"x12", "a2",   12},
+    {"x13", "a3",   13},
+    {"x14", "a4",   14},
+    {"x15", "a5",   15},
+    {"x16", "a6",   16},
+    {"x17", "a7",   17},
+    {"x18", "s2",   18},
+    {"x19", "s3",   19},
+    {"x20", "s4",   20},
+    {"x21", "s5",   21},
+    {"x22", "s6",   22},
+    {"x23", "s7",   23},
+    {"x24", "s8",   24},
+    {"x25", "s9",   25},
+    {"x26", "s10",  26},
+    {"x27", "s11",  27},
+    {"x28", "t3",   28},
+    {"x29", "t4",   29},
+    {"x30", "t5",   30},
+    {"x31", "t6",   31}
 };
 constexpr size_t RV_GPR_COUNT = std::size(RV_GPRS);
 
+std::string rvgpr_num2name(uint32_t regnum);
+uint32_t rvgpr_name2num(const std::string &reg_name);
+
+
+////////////////////////////////////////////////////////////////////////////////
+// RISC-V Control and Status Registers (CSRs)
+////////////////////////////////////////////////////////////////////////////////
 enum RV_CSR: uint32_t {
     // Floating Point CSRs
     RV_CSR_FFLAGS            = 0x001,
@@ -84,13 +124,15 @@ const std::unordered_map<uint32_t, std::string_view> RV_CSR_NAMES = {
     {RV_CSR_VX_DSCRATCH,       "vx_dscratch"}
 };
 
-// Get CSR name from address
-inline std::string rvcsr_getname(uint32_t addr);
+std::string rvcsr_num2name(uint32_t addr);
+uint32_t rvcsr_name2addr(const std::string &reg_name);
 
+// Get register type from name
+RVRegType_t rvreg_gettype(const std::string &reg_name);
+
+////////////////////////////////////////////////////////////////////////////////
 // Get human-readable ISA string from MISA CSR value
 std::string rv_isa_string(uint32_t misa, bool verbose=false);
-
-
 
 // Check if RISC-V toolchain is available
 bool rv_toolchain_check(const std::string &toolchain_prefix=RISCV_TOOLCHAIN_PREFIX);

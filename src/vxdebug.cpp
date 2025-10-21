@@ -25,6 +25,15 @@
 #define DEFAULT_TCP_IP   "127.0.0.1"
 #define DEFAULT_TCP_PORT 5555
 
+#define CHECK_ERRS(stmt) \
+    do { \
+        int rc = stmt; \
+        if (rc != RCODE_OK) { \
+            return rc; \
+        } \
+    } while(0)
+
+
 VortexDebugger::VortexDebugger():
     log_(new Logger("", 3)),
     backend_(new Backend())
@@ -197,16 +206,15 @@ int VortexDebugger::__execute_line(const std::string &input) {
     
     // --- Execute ---
     std::string cmd = toks[0];
-    int result = 0;
+    int result = 1;
     try {
         result = execute_command(cmd, toks);
     } catch (const std::exception &e) {
         log_->error(e.what());
-        return 1;
     }
 
-    if (result != 0 && result != -1) {
-        log_->error("Command failed with code " + std::to_string(result));
+    if (result != RCODE_OK) {
+        log_->error(strfmt("Command failed with code: %d, %s", result, rcode_str(result).c_str()));
     }
     return result;
 }
@@ -225,15 +233,17 @@ std::string VortexDebugger::get_prompt() const {
     
     prompt += "vxdbg";
     
-    // Add warp/thread selection info if available
-    int selected_wid, selected_tid;
-    backend_->get_selected_warp_thread(selected_wid, selected_tid, true);
+    if(backend_->transport_connected() ) {
+        // Add warp/thread selection info if available
+        int selected_wid, selected_tid;
+        backend_->get_selected_warp_thread(selected_wid, selected_tid, true);
 
-    uint32_t selected_pc;
-    backend_->get_selected_warp_pc(selected_pc, true);
-    
-    if (selected_wid >= 0 && selected_tid >= 0) {
-        prompt += strfmt(" [W%d:T%d, PC=0x%08X]", selected_wid, selected_tid, selected_pc);
+        uint32_t selected_pc;
+        backend_->get_selected_warp_pc(selected_pc, true);
+        
+        if (selected_wid >= 0 && selected_tid >= 0) {
+            prompt += strfmt(" [W%d:T%d, PC=0x%08X]", selected_wid, selected_tid, selected_pc);
+        }
     }
     
     prompt += "> " + std::string(ANSI_RST);
@@ -328,9 +338,14 @@ int VortexDebugger::cmd_transport(const std::vector<std::string>& args) {
         if (ip.empty()) ip = DEFAULT_TCP_IP;
         if (port == 0)  port = DEFAULT_TCP_PORT;
 
-        backend_->transport_setup("tcp");
-        backend_->transport_connect({{"ip", ip}, {"port", std::to_string(port)}});
-        backend_->initialize();
+        int rc;
+        rc = backend_->transport_setup("tcp");
+        if (rc != RCODE_OK) return rc;
+        rc = backend_->transport_connect({{"ip", ip}, {"port", std::to_string(port)}});
+        if (rc != RCODE_OK) return rc;
+        rc = backend_->initialize();
+        if (rc != RCODE_OK) return rc;
+
     } else {
         log_->error("No transport type specified");
         return 1;
@@ -369,7 +384,8 @@ int VortexDebugger::cmd_info(const std::vector<std::string>& args) {
             int coreid = wid / backend_->state_.platinfo.num_warps;
             bool halted = status_pair.first;
             uint32_t pc = status_pair.second;
-            status += strfmt(" (Core: %2d) Warp %2d : (%-7s) PC=0x%08X\n", coreid, wid, halted ? "Halted" : "Running", halted ? pc : 0);
+            status += strfmt(" (Core:%d) Warp %2d: %s%-8s%s PC=", coreid, wid, (halted ? ANSI_RED: ANSI_GRN), (halted ? "Halted" : "Running"), ANSI_RST);
+            status += (halted ? strfmt("0x%08X", pc) : "?") + "\n";
         }
         log_->info(status);
     }
@@ -388,10 +404,11 @@ int VortexDebugger::cmd_halt(const std::vector<std::string>& args) {
     std::vector<std::string> wids_list = parser.get_list<std::string>("wid");
     std::vector<std::string> except_list = parser.get_list<std::string>("except");
 
-    if (halt_all) {
+    if (halt_all) {                     // Halt all warps
         log_->info("Halting all warps...");
         backend_->halt_warps();
-    } else if (!wids_list.empty()) {
+    } 
+    else if (!wids_list.empty()) {      // Halt specific warps
         std::vector<int> wids;
         try {
             for (const auto& wid_str : wids_list) {
@@ -409,8 +426,7 @@ int VortexDebugger::cmd_halt(const std::vector<std::string>& args) {
         log_->info("Halting specific warps: " + vecjoin<int>(wids));
         backend_->halt_warps(wids);
     }
-    else if (!except_list.empty()) {
-        // Halt all warps except the specified ones
+    else if (!except_list.empty()) {    // Halt all warps except the specified ones
         std::vector<int> except_wids;
         try {
             for (const auto& wid_str : except_list) {
@@ -435,9 +451,16 @@ int VortexDebugger::cmd_halt(const std::vector<std::string>& args) {
         
         log_->info("Halting all warps except: " + vecjoin<int>(except_wids));
         backend_->halt_warps(wids_to_halt);
-    } else {
-        log_->error("Must specify either --all, --wids, or --except");
-        return 1;
+    } 
+    else {                              // Halt currently selected warp
+        int selected_wid, selected_tid;
+        backend_->get_selected_warp_thread(selected_wid, selected_tid, true);
+        if (selected_wid < 0) {
+            log_->error("No warp selected to halt. Use --all or --wid to specify warps.");
+            return 1;
+        }
+        log_->info("Halting currently selected warp: " + std::to_string(selected_wid));
+        backend_->halt_warps({selected_wid});
     }
 
     return 0;
@@ -456,11 +479,11 @@ int VortexDebugger::cmd_continue(const std::vector<std::string>& args) {
     std::vector<std::string> wids_list = parser.get_list<std::string>("wid");
     std::vector<std::string> except_list = parser.get_list<std::string>("except");
 
-    if (continue_all) {
+    if (continue_all) {                 // Continue all warps
         log_->info("Continuing all warps...");
         backend_->resume_warps();
     } 
-    else if (!wids_list.empty()) {
+    else if (!wids_list.empty()) {      // Continue specific warps
         std::vector<int> wids;
         try {
             for (const auto& wid_str : wids_list) {
@@ -477,8 +500,7 @@ int VortexDebugger::cmd_continue(const std::vector<std::string>& args) {
         log_->info("Continuing specific warps: " + vecjoin<int>(wids));
         backend_->resume_warps(wids);
     }
-    else if (!except_list.empty()) {
-        // Continue all warps except the specified ones
+    else if (!except_list.empty()) {    // Continue all warps except the specified ones
         std::vector<int> except_wids;
         try {
             for (const auto& wid_str : except_list) {
@@ -503,9 +525,16 @@ int VortexDebugger::cmd_continue(const std::vector<std::string>& args) {
         
         log_->info("Continuing all warps except: " + vecjoin<int>(except_wids));
         backend_->resume_warps(wids_to_continue);
-    } else {
-        log_->error("Must specify either --all, --wid a [b c...], or --except a [b c...]");
-        return 1;
+    } 
+    else {                              // Continue currently selected warp
+        int selected_wid, selected_tid;
+        backend_->get_selected_warp_thread(selected_wid, selected_tid, true);
+        if (selected_wid < 0) {
+            log_->error("No warp selected to continue. Use --all or --wid to specify warps.");
+            return 1;
+        }
+        log_->info("Continuing currently selected warp: " + std::to_string(selected_wid));
+        backend_->resume_warps({selected_wid});
     }
 
     return 0;
@@ -563,26 +592,62 @@ int VortexDebugger::cmd_inject(const std::vector<std::string>& args) {
 
 int VortexDebugger::cmd_reg(const std::vector<std::string>& args) {
     ArgParse::ArgumentParser parser("reg", "Register operations");
-    parser.add_argument({"operation"}, "Operation: read(r), write(w)", ArgParse::STR, "", true, "", {"r", "w"});
+    parser.add_argument({"operation"}, "Operation: read(r), write(w)", ArgParse::STR, "", true, "", {"r", "w", "read", "write"});
     parser.add_argument({"name"}, "Register name", ArgParse::STR, "");
     parser.add_argument({"value"}, "Value to write (for write operations)", ArgParse::STR, "");
     int rc = parser.parse_args(args);
     if (rc != 0) return rc;
 
-    // TODO
+    std::string operation = parser.get<std::string>("operation");
+    std::string name = parser.get<std::string>("name");
+
+    if (operation == "r" || operation == "read") {
+        uint32_t reg_value;
+        CHECK_ERRS(backend_->read_reg(name, reg_value));
+        log_->info(strfmt("Register %s = 0x%08X (%u)", name.c_str(), reg_value, reg_value));
+    } 
+    else if (operation == "w" || operation == "write") {
+        uint32_t reg_value = parse_uint(parser.get<std::string>("value"));
+        CHECK_ERRS(backend_->write_reg(name, reg_value));
+        log_->info(strfmt("Register %s written with 0x%08X (%u)", name.c_str(), reg_value, reg_value));
+    }
 
     return 0;
 }
 
 int VortexDebugger::cmd_mem(const std::vector<std::string>& args) {
     ArgParse::ArgumentParser parser("mem", "Memory operations");
-    parser.add_argument({"operation"}, "Operation: read(r), write(w)", ArgParse::STR, "", true, "", {"r", "w"});
+    parser.add_argument({"operation"}, "Operation: read(r) or write(w)", ArgParse::STR, "", true, "", {"r", "w", "read", "write"});
     parser.add_argument({"address"}, "Memory address", ArgParse::STR, "");
     parser.add_argument({"length"}, "Length in bytes (for read)", ArgParse::INT, "4");
-    parser.add_argument({"data"}, "Data to write (for write operations)", ArgParse::STR, "");
+    parser.add_argument({"value"}, "Comma-separated list of values to write (for write operations)", ArgParse::STR, "");
+    parser.add_argument({"-a", "--ascii"}, "Display memory as ASCII (for read operations)", ArgParse::BOOL, "false");
+    parser.add_argument({"-b", "--bytes"}, "Display memory as bytes (for read operations)", ArgParse::BOOL, "false");
     int rc = parser.parse_args(args);
     if (rc != 0) return rc;
-    // TODO:
+
+    std::string operation = parser.get<std::string>("operation");
+    uint32_t address = parse_uint(parser.get<std::string>("address"));
+    int length = parser.get<int>("length");
+    if (operation == "r" || operation == "read") {
+        std::vector<uint8_t> mem_data(length);
+        CHECK_ERRS(backend_->read_mem(address, length, mem_data));
+        int wpl = 4, bpw = 4;
+        if(parser.get<bool>("bytes")) {
+            wpl = 16; bpw = 1;
+        }
+        bool ascii_view = parser.get<bool>("ascii");
+        log_->info(strfmt("Read %d bytes from address 0x%08X:", length, address) + "\n" + hexdump(mem_data, address, bpw, wpl, ascii_view));
+    } 
+    else if (operation == "w" || operation == "write") {
+        std::vector<std::string> tokens = tokenize(parser.get<std::string>("value"), ',');
+        std::vector<uint8_t> mem_data;
+        for (const auto &token : tokens) {
+            mem_data.push_back(static_cast<uint8_t>(parse_uint(token)));
+        }
+        CHECK_ERRS(backend_->write_mem(address, mem_data));
+        log_->info(strfmt("Wrote %zu bytes to address 0x%08X", mem_data.size(), address));
+    }
     return 0;
 }
 

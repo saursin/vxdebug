@@ -5,6 +5,7 @@
 #include <cstdint>
 
 #include "dmdefs.h"
+#include "util.h"  // Include util.h for RCODE_OK and other return codes
 
 #ifndef DEFAULT_POLL_RETRIES
     #define DEFAULT_POLL_RETRIES 10
@@ -16,8 +17,11 @@
 // Forward declarations
 class Transport;
 class Logger;
+class Backend;
 
-
+////////////////////////////////////////////////////////////////////////////////
+// Backend class
+////////////////////////////////////////////////////////////////////////////////
 class Backend {
 public:
     Backend();
@@ -106,32 +110,35 @@ public:
     
     
     //----- Platform State Query/Update ----
-    // Get architecture register value
-    int reg_arch_read(const uint32_t regnum, uint32_t &value);
+    // Read/Write GPR value
+    int read_gpr(const uint32_t regnum, uint32_t &value);
+    int write_gpr(const uint32_t regnum, const uint32_t value);
 
-    // Set the architecture register value
-    int reg_arch_write(const uint32_t regnum, const uint32_t value);
+    // Read/Write the CSR value
+    int read_csr(const uint32_t regaddr, uint32_t &value);
+    int write_csr(const uint32_t regaddr, const uint32_t value);
 
-    // Get the CSR register value
-    int reg_csr_read(const uint32_t regaddr, uint32_t &value);
+    // Read/Write register(GPR/CSR/PC) by name
+    int read_reg(const std::string &reg_name, uint32_t &value);
+    int write_reg(const std::string &reg_name, uint32_t value);
 
-    // Set the CSR register value
-    int reg_csr_write(const uint32_t regaddr, const uint32_t value);
+    // Batch read/write registers by name
+    int read_regs(const std::vector<std::string> &reg_names, std::vector<uint32_t> &values);
+    int write_regs(const std::vector<std::string> &reg_names, const std::vector<uint32_t> &values);
 
-    // Read processor register
-    int read_register(const std::string &reg_name, uint32_t &value);
-    
-    // Write processor register
-    int write_register(const std::string &reg_name, uint32_t value);
-
-    int mem_read(const uint32_t address, const uint32_t size, std::vector<uint32_t> &data);
-    int mem_write(const uint32_t address, const uint32_t size, const std::vector<uint32_t> &data);
+    // Read/Write memory
+    int read_mem(const uint32_t addr, const uint32_t nbytes, std::vector<uint8_t> &data);
+    int write_mem(const uint32_t addr, const std::vector<uint8_t> &data);
 
 private:
     // Transport 
     Transport *transport_;
     std::string transport_type_;
     Logger *log_;
+
+    // Parameters
+    unsigned poll_retries_    = DEFAULT_POLL_RETRIES;
+    unsigned poll_delay_ms_   = DEFAULT_POLL_DELAY_MS;
 
     // Current Debugger state
     struct State_t {
@@ -154,15 +161,14 @@ private:
 
     } state_;
     
-
+    //==============================================================================
     // Helpers
+    //==============================================================================
     void _print_platform_info() const;
 
-    // Parameters
-    unsigned poll_retries_    = DEFAULT_POLL_RETRIES;
-    unsigned poll_delay_ms_   = DEFAULT_POLL_DELAY_MS;
-
+    //==============================================================================
     // Low-level DM register access
+    //==============================================================================
     int dmreg_rd(const DMReg_t &reg, uint32_t &value);
     int dmreg_wr(const DMReg_t &reg, const uint32_t &value);
     int dmreg_rdfield(const DMReg_t &reg, const std::string &fieldname, uint32_t &value);
@@ -170,12 +176,8 @@ private:
     int dmreg_pollfield(const DMReg_t &reg, const std::string &fieldname, const uint32_t &exp_value, uint32_t *final_value,
                         int max_retries=-1, int delay_ms=-1);
 
-    struct DMRegVal_t {
-        bool valid = false;
-        bool dirty = false;
-        uint32_t val;
-    };
-    std::map<DMReg_t, DMRegVal_t> dmreg_cache_;
-
+    
+    // Friend classes
     friend class VortexDebugger;
+    friend class CommandExecutor;
 };

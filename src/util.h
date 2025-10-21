@@ -1,6 +1,7 @@
 #pragma once
 #include <string>
 #include <vector>
+#include <map>
 #include <cstdint>
 
 // Return codes
@@ -14,6 +15,20 @@
 #define RCODE_TRANSPORT_ERR     -7
 #define RCODE_NONESELECTED_ERR  -8
 
+const std::map<int, std::string> RCODE_STR_MAP = {
+    {RCODE_OK,                 "OK"},
+    {RCODE_ERROR,              "ERROR"},
+    {RCODE_TIMEOUT,            "TIMEOUT"},
+    {RCODE_NOT_IMPL,           "NOT_IMPLEMENTED"},
+    {RCODE_INVALID_ARG,        "INVALID_ARGUMENT"},
+    {RCODE_BUFFER_OVRFLW,      "BUFFER_OVERFLOW"},
+    {RCODE_COMM_ERR,           "COMMUNICATION_ERROR"},
+    {RCODE_TRANSPORT_ERR,      "TRANSPORT_ERROR"},
+    {RCODE_NONESELECTED_ERR,   "NONE_SELECTED_ERROR"}
+};
+
+std::string rcode_str(int code);
+
 // ANSI colors
 #define ANSI_RST "\033[0m"
 #define ANSI_GRY "\033[90m"
@@ -22,6 +37,10 @@
 #define ANSI_YLW "\033[33m"
 #define ANSI_RED "\033[31m"
 
+union WordBytes_t {
+    uint32_t word;
+    uint8_t bytes[4];
+};
 
 // String stripping functions
 std::string lstrip(const std::string &s);
@@ -58,3 +77,9 @@ std::string vecjoin(const std::vector<T> &vec, const std::string &sep = ",") {
     }
     return result;
 }
+
+uint32_t parse_uint(std::string str);
+
+// Pretty hexdump for vector<uint8_t>
+std::string hexdump(const std::vector<uint8_t>& data, size_t base_addr = 0, size_t bytes_per_word = 4, 
+                size_t words_per_col = 4, bool enable_ascii = true);

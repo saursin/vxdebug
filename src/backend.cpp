@@ -3,6 +3,7 @@
 #include "logger.h"
 #include "util.h"
 #include <unistd.h>
+#include <cstring>   // for std::memcpy
 
 #include "riscv.h"
 
@@ -25,6 +26,14 @@
         } \
     } while(0)
 
+#define CHECK_ERRS(stmt) \
+    do { \
+        int rc = stmt; \
+        if (rc != RCODE_OK) { \
+           return rc; \
+        } \
+    } while(0)
+
 #define CHECK_TRANSPORT() \
     if(!transport_ || !transport_->is_connected()) { \
         log_->error("Transport uninitialized or disconnected"); \
@@ -37,7 +46,11 @@
         return RCODE_NONESELECTED_ERR; \
     }
 
-//==============================================================================
+
+////////////////////////////////////////////////////////////////////////////////
+// Backend
+////////////////////////////////////////////////////////////////////////////////
+
 Backend::Backend(): 
     transport_(nullptr),
     transport_type_(""),
@@ -143,9 +156,7 @@ int Backend::initialize(bool quiet) {
 // API Methods
 //==============================================================================
 
-////////////////////////////////////////////////////////////////////////////////
-// Warp Control Methods
-
+//----- Warp Control Methods ---------------------------------------------------
 int Backend::wake_dm() {  
     // Check if ndmreset is set
     uint32_t ndmreset = 0;
@@ -241,15 +252,14 @@ int Backend::fetch_platform_info() {
 
     // Obtain ISA Information
     uint32_t misa = 0;
-    CHECK_ERR(reg_csr_read(RV_CSR_MISA, misa), "Failed to read MISA CSR");
+    CHECK_ERR(read_csr(RV_CSR_MISA, misa), "Failed to read MISA CSR");
     state_.platinfo.misa = misa;
 
     return RCODE_OK;
 }
 
-////////////////////////////////////////////////////////////////////////////////
-// Warp Selection
 
+//----- Warp Selection ---------------------------------------------------------
 int Backend::select_warps(const std::vector<int> &wids) {
     // Create enough 32-bit masks to cover all warps
     size_t num_win = (state_.platinfo.num_total_warps + 31) / 32;
@@ -331,8 +341,7 @@ int Backend::get_selected_warp_pc(uint32_t &pc, bool force_fetch) {
 }
 
 
-////////////////////////////////////////////////////////////////////////////////
-// Query Warp Status
+//----- Query Warp Status ------------------------------------------------------
 
 int Backend::get_warp_status(std::map<int, std::pair<bool, uint32_t>> &warp_status, bool include_pc) {
     warp_status.clear();
@@ -404,8 +413,7 @@ int Backend::set_warp_pc(const uint32_t pc) {
 }
 
 
-////////////////////////////////////////////////////////////////////////////////
-// Warp Control Methods
+//----- Warp Control Methods ---------------------------------------------------
 
 int Backend::halt_warps(const std::vector<int> &wids) {
     log_->info("Halting warps: " + std::to_string(wids.size()) + " warps");
@@ -534,83 +542,298 @@ int Backend::inject_instruction(const std::string &asm_instr) {
 }
 
 
-////////////////////////////////////////////////////////////////////////////////
-// Platform Query/Update Methods
+// ----- Platform Query/Update Methods -----------------------------------------
 
-int Backend::reg_arch_read(const uint32_t regnum, uint32_t &value) {
-    (void)regnum;
-    (void)value;
+int Backend::read_gpr(const uint32_t regnum, uint32_t &value) {
+    // move arch reg to dscratch: REG[i] -csrw-> dscratch
+    CHECK_ERR(inject_instruction(strfmt("csrw %d, x%d", RV_CSR_VX_DSCRATCH, regnum)), "Failed to move arch reg to dscratch");
+    // read reg value from dscratch
+    CHECK_ERR(dmreg_rd(DMReg_t::DSCRATCH, value), "Failed to obtain GPR value from DSCRATCH");
     return RCODE_OK;
 }
 
-// Set the architecture register value
-int Backend::reg_arch_write(const uint32_t regnum, const uint32_t value) {
-    (void)regnum;
-    (void)value;
+int Backend::write_gpr(const uint32_t regnum, const uint32_t value) {
+    // move value to dscratch: dbg(value) --> dscratch
+    CHECK_ERR(dmreg_wr(DMReg_t::DSCRATCH, value), "Failed to write DSCRATCH register");
+    // move dscratch to arch reg: dscratch -csrr-> REG[i]
+    CHECK_ERR(inject_instruction(strfmt("csrr x%d, %d", regnum, RV_CSR_VX_DSCRATCH)), "Failed to move dscratch to GPR");
     return RCODE_OK;
 }
 
 // Get the CSR register value
-int Backend::reg_csr_read(const uint32_t regaddr, uint32_t &value) {
-    // Inject instruction to read t0, in dscratch
-    uint32_t t0 = 0;
-    CHECK_ERR(inject_instruction(strfmt("csrw %d, t0", RV_CSR_VX_DSCRATCH)), "Failed to inject instruction");
-    CHECK_ERR(dmreg_rd(DMReg_t::DSCRATCH, t0), "Failed to read DSCRATCH register");
-
-    // Inject instruction to read the CSR into t0
-    CHECK_ERR(inject_instruction(strfmt("csrr t0, %d", regaddr)), "Failed to inject instruction");
-    // Inject instruction to write t0 into dscratch
-    CHECK_ERR(inject_instruction(strfmt("csrw %d, t0", RV_CSR_VX_DSCRATCH)), "Failed to inject instruction");
-    CHECK_ERR(dmreg_rd(DMReg_t::DSCRATCH, value), "Failed to read DSCRATCH register");
-
-    // Inject instruction to restore t0
-    CHECK_ERR(dmreg_wr(DMReg_t::DSCRATCH, t0), "Failed to write DSCRATCH register");
-    CHECK_ERR(inject_instruction(strfmt("csrr t0, %d", RV_CSR_VX_DSCRATCH)), "Failed to inject instruction");
-
-    log_->debug(strfmt("Read CSR[%s] => 0x%08X", std::to_string(regaddr).c_str(), value));
+int Backend::read_csr(const uint32_t regaddr, uint32_t &value) {
+    // save t0: t0 -csrw-> dscratch --> dbg (t0_val)
+    uint32_t t0_val = 0;
+    CHECK_ERR(inject_instruction(strfmt("csrw %d, t0", RV_CSR_VX_DSCRATCH)), "Failed to save t0 to DSCRATCH");          // TODO: if any subsequent inject fails, fn returns without restoring t0 --> need RAII guard
+    CHECK_ERR(dmreg_rd(DMReg_t::DSCRATCH, t0_val), "Failed to obtain t0 value from DSCRATCH");
+    // move csr to dscratch through t0: csr -csrr-> t0 ; t0 -csrw-> dscratch
+    CHECK_ERR(inject_instruction(strfmt("csrr t0, %d", regaddr)), "Failed to read CSR into t0");
+    CHECK_ERR(inject_instruction(strfmt("csrw %d, t0", RV_CSR_VX_DSCRATCH)), "Failed to write t0 to DSCRATCH");
+    // read csr value from dscratch: dscratch -dbg-> value
+    CHECK_ERR(dmreg_rd(DMReg_t::DSCRATCH, value), "Failed to obtain CSR value from DSCRATCH");
+    // restore t0: dbg(t0_val) --> dscratch -csrr-> t0
+    CHECK_ERR(dmreg_wr(DMReg_t::DSCRATCH, t0_val), "Failed to restore t0 value to DSCRATCH");
+    CHECK_ERR(inject_instruction(strfmt("csrr t0, %d", RV_CSR_VX_DSCRATCH)), "Failed to restore t0 from DSCRATCH");
     return RCODE_OK;
 }
 
 // Set the CSR register value
-int Backend::reg_csr_write(const uint32_t regaddr, const uint32_t value) {
-    (void)regaddr;
-    (void)value;
+int Backend::write_csr(const uint32_t regaddr, const uint32_t value) {
+    // save t0: t0 -csrw-> dscratch --> dbg (t0_val)
+    uint32_t t0_val = 0;
+    CHECK_ERR(inject_instruction(strfmt("csrw %d, t0", RV_CSR_VX_DSCRATCH)), "Failed to save t0 to DSCRATCH");          // TODO: if any subsequent inject fails, fn returns without restoring t0 --> need RAII guard
+    CHECK_ERR(dmreg_rd(DMReg_t::DSCRATCH, t0_val), "Failed to obtain t0 value from DSCRATCH");
+    // move value to dscratch: dbg(value) --> dscratch
+    CHECK_ERR(dmreg_wr(DMReg_t::DSCRATCH, value), "Failed to write value to DSCRATCH");
+    // move dscratch to csr through t0: dscratch -csrr-> t0 ; t0 -csrw-> csr
+    CHECK_ERR(inject_instruction(strfmt("csrr t0, %d", RV_CSR_VX_DSCRATCH)), "Failed to read DSCRATCH into t0");
+    CHECK_ERR(inject_instruction(strfmt("csrw %d, t0", regaddr)), "Failed to write t0 to CSR");
+    // restore t0: dbg(t0_val) --> dscratch -csrr-> t0
+    CHECK_ERR(dmreg_wr(DMReg_t::DSCRATCH, t0_val), "Failed to restore t0 value to DSCRATCH");
+    CHECK_ERR(inject_instruction(strfmt("csrr t0, %d", RV_CSR_VX_DSCRATCH)), "Failed to restore t0 from DSCRATCH");
     return RCODE_OK;
 }
 
-// Read processor register
-int Backend::read_register(const std::string &reg_name, uint32_t &value) {
-    (void)reg_name;
-    (void)value;
+int Backend::read_reg(const std::string &reg_name, uint32_t &value) {
+    auto regtype = rvreg_gettype(reg_name);
+    if (regtype == RVRegType_t::GPR) {
+        uint32_t regnum = rvgpr_name2num(reg_name);
+        CHECK_ERR(read_gpr(regnum, value), "Failed to read GPR " + reg_name);
+        return RCODE_OK;
+    }
+    else if (regtype == RVRegType_t::CSR) {
+        uint32_t csraddr = rvcsr_name2addr(reg_name);
+        CHECK_ERR(read_csr(csraddr, value), "Failed to read CSR " + reg_name);
+        return RCODE_OK;
+    }
+    else if (reg_name == "pc") {
+        CHECK_ERR(get_warp_pc(value), "Failed to read PC register");
+        return RCODE_OK;
+    }
+    else {
+        log_->error("Unknown register name: " + reg_name);
+        return RCODE_INVALID_ARG;
+    }
     return RCODE_OK;
 }
 
 // Write processor register
-int Backend::write_register(const std::string &reg_name, uint32_t value) {
-    (void)reg_name;
-    (void)value;
+int Backend::write_reg(const std::string &reg_name, uint32_t value) {
+    auto regtype = rvreg_gettype(reg_name);
+    if (regtype == RVRegType_t::GPR) {
+        uint32_t regnum = rvgpr_name2num(reg_name);
+        CHECK_ERR(write_gpr(regnum, value), "Failed to write GPR " + reg_name);
+        return RCODE_OK;
+    }
+    else if (regtype == RVRegType_t::CSR) {
+        uint32_t csraddr = rvcsr_name2addr(reg_name);
+        CHECK_ERR(write_csr(csraddr, value), "Failed to write CSR " + reg_name);
+        return RCODE_OK;
+    }
+    else if (reg_name == "pc") {
+        CHECK_ERR(set_warp_pc(value), "Failed to write PC register");
+        return RCODE_OK;
+    }
+    else {
+        log_->error("Unknown register name: " + reg_name);
+        return RCODE_INVALID_ARG;
+    }
+    return RCODE_OK;
+}
+
+int Backend::read_regs(const std::vector<std::string> &reg_names, std::vector<uint32_t> &values) {
+    values.clear();
+    for (const auto &reg_name : reg_names) {            // TODO: Optimize multiple register reads
+        uint32_t value = 0;
+        CHECK_ERR(read_reg(reg_name, value), "Failed to read register " + reg_name);
+        values.push_back(value);
+    }
+    return RCODE_OK;
+}
+
+int Backend::write_regs(const std::vector<std::string> &reg_names, const std::vector<uint32_t> &values) {
+    if (reg_names.size() != values.size()) {
+        log_->error("Number of register names and values do not match");
+        return RCODE_INVALID_ARG;
+    }
+    for (size_t i = 0; i < reg_names.size(); ++i) {     // TODO: Optimize multiple register writes
+        CHECK_ERR(write_reg(reg_names[i], values[i]), "Failed to write register " + reg_names[i]);
+    }
     return RCODE_OK;
 }
 
 // Read memory
-int Backend::mem_read(const uint32_t address, const uint32_t size, std::vector<uint32_t> &data) {
-    (void)address;
-    (void)size;
-    (void)data;
+int Backend::read_mem(const uint32_t addr, const uint32_t nbytes, std::vector<uint8_t> &data) {
+    if(nbytes == 0)
+        return RCODE_OK;
+
+    data.clear();
+    
+    // Compute word aligned address
+    uint32_t start_addr = addr & ~0x3;
+    uint32_t end_addr = (addr + nbytes + 3) & ~0x3;   // Align to next word
+    uint32_t size_in_bytes = end_addr - start_addr;
+
+    data.resize(size_in_bytes);     // allocate buffer
+
+    // Save t0 & t1: t0/t1 -csrw-> dscratch --> dbg (t0_val/t1_val)
+    uint32_t t0_val = 0, t1_val = 0;
+    CHECK_ERR(inject_instruction(strfmt("csrw %d, t0", RV_CSR_VX_DSCRATCH)), "Failed to save t0 to DSCRATCH");          // TODO: if any subsequent inject fails, fn returns without restoring t0,t1 --> need RAII guard
+    CHECK_ERR(dmreg_rd(DMReg_t::DSCRATCH, t0_val), "Failed to obtain t0 value from DSCRATCH");
+    CHECK_ERR(inject_instruction(strfmt("csrw %d, t1", RV_CSR_VX_DSCRATCH)), "Failed to save t1 to DSCRATCH");
+    CHECK_ERR(dmreg_rd(DMReg_t::DSCRATCH, t1_val), "Failed to obtain t1 value from DSCRATCH");
+
+    // Put start address in t0: dbg(start_addr) --> dscratch -csrr-> t0
+    CHECK_ERR(dmreg_wr(DMReg_t::DSCRATCH, start_addr), "Failed to write start address to DSCRATCH");
+    CHECK_ERR(inject_instruction(strfmt("csrr t0, %d", RV_CSR_VX_DSCRATCH)), "Failed to load start address into t0");
+
+    // Read words
+
+    // pre format and compile loop instructions for speed
+    const uint32_t lw_t1 = rv_asm({"lw t1, 0(t0)"}).at(0);
+    const uint32_t csrw_dscratch_t1 = rv_asm({strfmt("csrw %d, t1", RV_CSR_VX_DSCRATCH)}).at(0);
+    const uint32_t addi_t0_4 = rv_asm({"addi t0, t0, 4"}).at(0);
+
+    for (size_t i = 0; i < size_in_bytes; i += 4) {
+        uint32_t rword;
+        // Load word from memory to t1
+        CHECK_ERR(inject_instruction(lw_t1), "Failed to load word from memory");
+        // Move t1 to dscratch for reading
+        CHECK_ERR(inject_instruction(csrw_dscratch_t1), "Failed to write t1 to DSCRATCH");
+        CHECK_ERR(dmreg_rd(DMReg_t::DSCRATCH, rword), "Failed to obtain word from DSCRATCH");
+        // Increment address in t0
+        CHECK_ERR(inject_instruction(addi_t0_4), "Failed to increment address in t0");
+        // write data to buffer
+        std::memcpy(&data[i], &rword, sizeof(rword));
+    }
+
+    // Restore t0 & t1
+    CHECK_ERR(dmreg_wr(DMReg_t::DSCRATCH, t0_val), "Failed to restore t0 value to DSCRATCH");
+    CHECK_ERR(inject_instruction(strfmt("csrr t0, %d", RV_CSR_VX_DSCRATCH)), "Failed to restore t0 from DSCRATCH");
+    CHECK_ERR(dmreg_wr(DMReg_t::DSCRATCH, t1_val), "Failed to restore t1 value to DSCRATCH");
+    CHECK_ERR(inject_instruction(strfmt("csrr t1, %d", RV_CSR_VX_DSCRATCH)), "Failed to restore t1 from DSCRATCH");
+
+
+    // trim extra bytes
+    size_t head_offset = addr - start_addr;
+    if (head_offset || size_in_bytes != nbytes) {
+        // Adjust for unaligned start address and requested size
+        if (head_offset) data.erase(data.begin(), data.begin() + head_offset);
+        // Trim to requested size
+        if (data.size() > nbytes) data.resize(nbytes);
+    }
     return RCODE_OK;
 }
 
 // Write memory
-int Backend::mem_write(const uint32_t address, const uint32_t size, const std::vector<uint32_t> &data) {
-    (void)address;
-    (void)size;
-    (void)data;
+int Backend::write_mem(const uint32_t addr, const std::vector<uint8_t> &data) {
+    size_t nbytes = data.size();   
+    if (nbytes == 0)
+        return RCODE_OK;
+
+    // Compute word aligned address
+    uint32_t end_addr   = (addr + nbytes);
+    
+    // --- Save t0 & t1 ---
+    uint32_t t0_val = 0, t1_val = 0;
+    CHECK_ERR(inject_instruction(strfmt("csrw %d, t0", RV_CSR_VX_DSCRATCH)), "Failed to save t0");
+    CHECK_ERR(dmreg_rd(DMReg_t::DSCRATCH, t0_val), "Failed to read t0");
+    CHECK_ERR(inject_instruction(strfmt("csrw %d, t1", RV_CSR_VX_DSCRATCH)), "Failed to save t1");
+    CHECK_ERR(dmreg_rd(DMReg_t::DSCRATCH, t1_val), "Failed to read t1");
+
+    // --- Pre-assemble common instructions ---
+    const uint32_t csrr_t0_dscratch = rv_asm({strfmt("csrr t0, %d", RV_CSR_VX_DSCRATCH)}).at(0);
+    const uint32_t csrr_t1_dscratch = rv_asm({strfmt("csrr t1, %d", RV_CSR_VX_DSCRATCH)}).at(0);
+    const uint32_t csrw_dscratch_t1 = rv_asm({strfmt("csrw %d, t1", RV_CSR_VX_DSCRATCH)}).at(0);
+    const uint32_t lw_t1_t0         = rv_asm({"lw t1, 0(t0)"}).at(0);
+    const uint32_t sw_t1_t0         = rv_asm({"sw t1, 0(t0)"}).at(0);
+    const uint32_t addi_t0_4        = rv_asm({"addi t0, t0, 4"}).at(0);
+
+    uint32_t cur = addr;    // running address
+    size_t idx = 0;
+
+    // --- Leading partial word ---
+    if (cur % 4 != 0) {
+        uint32_t curr_base_addr = cur & ~0x3;
+        // Synchronize t0 with current address
+        CHECK_ERR(dmreg_wr(DMReg_t::DSCRATCH, curr_base_addr), "Failed to write base addr");
+        CHECK_ERR(inject_instruction(csrr_t0_dscratch), "Failed to read t0 from DSCRATCH");
+
+        // Read original value
+        WordBytes_t value;
+        CHECK_ERR(inject_instruction(lw_t1_t0), "Failed to load original word into t1");
+        CHECK_ERR(inject_instruction(csrw_dscratch_t1), "Failed to save t1");
+        CHECK_ERR(dmreg_rd(DMReg_t::DSCRATCH, value.word), "Failed to read orig word");
+
+        // Patch original word
+        size_t head_offset = cur % 4;
+        size_t take = std::min<size_t>(4 - head_offset, data.size() - idx);
+        for (unsigned i = head_offset; i < head_offset + take; ++i)
+            value.bytes[i] = data[idx++];
+        cur += take;
+
+        // Write back patched word
+        CHECK_ERR(dmreg_wr(DMReg_t::DSCRATCH, value.word), "Failed to write patched word");
+        CHECK_ERR(inject_instruction(csrr_t1_dscratch), "Failed to read t1 from DSCRATCH");
+        CHECK_ERR(inject_instruction(sw_t1_t0), "Failed to store word into memory");
+    }
+
+    // --- Middle full words ---
+    if (end_addr - cur >= 4) {  // at least one full word to write
+        // Synchronize t0 with current address
+        CHECK_ERR(dmreg_wr(DMReg_t::DSCRATCH, cur), "Failed to write current addr");
+        CHECK_ERR(inject_instruction(csrr_t0_dscratch), "Failed to read t0 from DSCRATCH");
+
+        while ((end_addr - cur) >= 4) {
+            WordBytes_t value;
+            std::memcpy(value.bytes, &data[idx], 4);
+            CHECK_ERR(dmreg_wr(DMReg_t::DSCRATCH, value.word), "Failed to write word to DSCRATCH");
+            CHECK_ERR(inject_instruction(csrr_t1_dscratch), "Failed to read t1 from DSCRATCH");
+            CHECK_ERR(inject_instruction(sw_t1_t0), "Failed to store word into memory");
+            CHECK_ERR(inject_instruction(addi_t0_4), "Failed to increment t0");
+            cur += 4;
+            idx += 4;
+        }
+    }
+        
+    // --- Trailing partial word ---
+    if (cur < end_addr) {
+        // synchronize t0 with current address
+        uint32_t base = cur & ~0x3;
+        CHECK_ERR(dmreg_wr(DMReg_t::DSCRATCH, base), "Failed to write current addr");
+        CHECK_ERR(inject_instruction(csrr_t0_dscratch), "Failed to read t0 from DSCRATCH");
+
+        // Read original word
+        WordBytes_t value;
+        CHECK_ERR(inject_instruction(lw_t1_t0), "Failed to load original word into t1");
+        CHECK_ERR(inject_instruction(csrw_dscratch_t1), "Failed to save t1");
+        CHECK_ERR(dmreg_rd(DMReg_t::DSCRATCH, value.word), "Failed to read orig word");
+
+        // Patch original word
+        size_t take = end_addr - cur;
+        for (unsigned i = 0; i < take; ++i)
+            value.bytes[i] = data[idx++];
+        cur += take;
+
+        // Write back patched word
+        CHECK_ERR(dmreg_wr(DMReg_t::DSCRATCH, value.word), "Failed to write patched word to DSCRATCH");
+        CHECK_ERR(inject_instruction(csrr_t1_dscratch), "Failed to read t1 from DSCRATCH");
+        CHECK_ERR(inject_instruction(sw_t1_t0), "Failed to store word into memory");
+    }
+
+    // --- Restore t0 & t1 ---
+    CHECK_ERR(dmreg_wr(DMReg_t::DSCRATCH, t0_val), "Failed to restore t0 value to DSCRATCH");
+    CHECK_ERR(inject_instruction(strfmt("csrr t0, %d", RV_CSR_VX_DSCRATCH)), "Failed to restore t0 from DSCRATCH");
+    CHECK_ERR(dmreg_wr(DMReg_t::DSCRATCH, t1_val), "Failed to restore t1 value to DSCRATCH");
+    CHECK_ERR(inject_instruction(strfmt("csrr t1, %d", RV_CSR_VX_DSCRATCH)), "Failed to restore t1 from DSCRATCH");
+
     return RCODE_OK;
 }
 
 
-////////////////////////////////////////////////////////////////////////////////
+//==============================================================================
 // Helpers
+//==============================================================================
 
 void Backend::_print_platform_info() const {
     std::string info;
@@ -628,15 +851,15 @@ void Backend::_print_platform_info() const {
     return;
 }
 
-
-// =============================================================================
+//==============================================================================
 // Low-level DM register access
-// =============================================================================
+//==============================================================================
+
 int Backend::dmreg_rd(const DMReg_t &reg, uint32_t &value) {
     CHECK_TRANSPORT();
     const auto& rinfo = get_dmreg(reg);
     CHECK_ERR(transport_->read_reg(rinfo.addr, value), "Failed to read DM register " + std::string(rinfo.name));
-    log_->debug(strfmt("Rd DMReg[0x%04X, %s] => 0x%08X", rinfo.addr, std::string(rinfo.name).c_str(), value));
+    log_->debug(strfmt("Rd DM.%s(0x%02X) => 0x%08X", rinfo.name.data(), rinfo.addr, value));
     return RCODE_OK;
 }
 
@@ -644,7 +867,7 @@ int Backend::dmreg_wr(const DMReg_t &reg, const uint32_t &value) {
     CHECK_TRANSPORT();
     const auto& rinfo = get_dmreg(reg);
     CHECK_ERR(transport_->write_reg(rinfo.addr, value), "Failed to write DM register " + std::string(rinfo.name));
-    log_->debug(strfmt("Wr DMReg[0x%04X, %s] <= 0x%08X", rinfo.addr, std::string(rinfo.name).c_str(), value));
+    log_->debug(strfmt("Wr DM.%s(0x%02X) <= 0x%08X", rinfo.name.data(), rinfo.addr, value));
     return RCODE_OK;
 }
 
@@ -657,7 +880,7 @@ int Backend::dmreg_rdfield(const DMReg_t &reg, const std::string &fieldname, uin
         uint32_t reg_value = 0;
         CHECK_ERR(transport_->read_reg(rinfo.addr, reg_value), "Failed to read DM register " + std::string(rinfo.name));
         value = extract_dmreg_field(reg, fieldname, reg_value);
-        log_->debug(strfmt("Rd DMReg[0x%04X, %s.%s] => 0x%X", rinfo.addr, std::string(rinfo.name).c_str(), std::string(finfo->name).c_str(), value));
+        log_->debug(strfmt("Rd DM.%s(0x%02X).%s => 0x%X", rinfo.name.data(), rinfo.addr, finfo->name.data(), value));
         return RCODE_OK;
     } catch (const std::exception& e) {
         log_->error("Failed to read field: " + std::string(e.what()));
@@ -682,13 +905,8 @@ int Backend::dmreg_wrfield(const DMReg_t &reg, const std::string &fieldname, con
         // Write back the modified register
         CHECK_ERR(transport_->write_reg(rinfo.addr, new_reg_value), "Failed to write DM register " + std::string(rinfo.name));
 
-        log_->debug(strfmt("Wr DMReg[0x%04X, %s.%s] <= 0x%X (NewRegVal: 0x%08X, OldRegVal: 0x%08X)", 
-                          rinfo.addr, 
-                          std::string(rinfo.name).c_str(), 
-                          std::string(finfo->name).c_str(), 
-                          value, 
-                          new_reg_value, 
-                          curr_reg_value));
+        log_->debug(strfmt("Wr DM.%s(0x%02X).%s <= 0x%X (NewRegVal: 0x%08X, OldRegVal: 0x%08X)", 
+                    rinfo.name.data(), rinfo.addr, finfo->name.data(), value, new_reg_value, curr_reg_value));
         return RCODE_OK;
     } catch (const std::exception& e) {
         log_->error("Failed to write field: " + std::string(e.what()));
@@ -718,8 +936,8 @@ int Backend::dmreg_pollfield(const DMReg_t &reg, const std::string &fieldname, c
             
             // Extract field value
             value = (reg_value & field_mask) >> finfo->lsb;
-            log_->debug("Poll DM[" + std::string(rinfo.name) + "." + std::string(finfo->name) + "] = 0x" + hex2str(value) + 
-                    " (attempt " + std::to_string(attempt + 1) + "/" + std::to_string(max_retries) + ")");
+            log_->debug(strfmt("Poll DM.%s(0x%02X).%s => 0x%X == 0x%X (RegVal: 0x%08X)", 
+                        rinfo.name.data(), rinfo.addr, finfo->name.data(), value, exp_value, reg_value));
             
             // Check if expected value is reached
             if (value == exp_value) {
