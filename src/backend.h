@@ -130,6 +130,11 @@ public:
     int read_mem(const uint32_t addr, const uint32_t nbytes, std::vector<uint8_t> &data);
     int write_mem(const uint32_t addr, const std::vector<uint8_t> &data);
 
+
+    // ----- Accessors -----
+    int get_num_warps() const { return state_.platinfo.num_total_warps; }
+    int get_num_threads_per_warp() const { return state_.platinfo.num_threads; }
+
 private:
     // Transport 
     Transport *transport_;

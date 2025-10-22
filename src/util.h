@@ -83,3 +83,11 @@ uint32_t parse_uint(std::string str);
 // Pretty hexdump for vector<uint8_t>
 std::string hexdump(const std::vector<uint8_t>& data, size_t base_addr = 0, size_t bytes_per_word = 4, 
                 size_t words_per_col = 4, bool enable_ascii = true);
+
+
+inline uint32_t swap_endianess32(uint32_t val) {
+    return ((val >> 24) & 0x000000FF) |
+           ((val >> 8)  & 0x0000FF00) |
+           ((val << 8)  & 0x00FF0000) |
+           ((val << 24) & 0xFF000000);
+}

@@ -402,13 +402,14 @@ int Backend::get_warp_summary(bool *allhalted, bool *anyhalted, bool *allrunning
 int Backend::get_warp_pc(uint32_t &pc) {
     CHECK_SELECTED();
     CHECK_ERR(dmreg_rd(DMReg_t::DPC, pc), "Failed to read DPC register");
+    log_->debug(strfmt("Rd PC => 0x%08X", pc));
     return RCODE_OK;
 }
 
 int Backend::set_warp_pc(const uint32_t pc) {
     CHECK_SELECTED();
-    CHECK_ERR(dmreg_wr(DMReg_t::DPC, pc), 
-        "Failed to write DPC register");
+    CHECK_ERR(dmreg_wr(DMReg_t::DPC, pc), "Failed to write DPC register");
+    log_->debug(strfmt("Wr PC <= 0x%08X", pc));
     return RCODE_OK;
 }
 
@@ -549,6 +550,7 @@ int Backend::read_gpr(const uint32_t regnum, uint32_t &value) {
     CHECK_ERR(inject_instruction(strfmt("csrw %d, x%d", RV_CSR_VX_DSCRATCH, regnum)), "Failed to move arch reg to dscratch");
     // read reg value from dscratch
     CHECK_ERR(dmreg_rd(DMReg_t::DSCRATCH, value), "Failed to obtain GPR value from DSCRATCH");
+    log_->debug(strfmt("Rd GPR[x%d] => 0x%08X", regnum, value));
     return RCODE_OK;
 }
 
@@ -557,6 +559,7 @@ int Backend::write_gpr(const uint32_t regnum, const uint32_t value) {
     CHECK_ERR(dmreg_wr(DMReg_t::DSCRATCH, value), "Failed to write DSCRATCH register");
     // move dscratch to arch reg: dscratch -csrr-> REG[i]
     CHECK_ERR(inject_instruction(strfmt("csrr x%d, %d", regnum, RV_CSR_VX_DSCRATCH)), "Failed to move dscratch to GPR");
+    log_->debug(strfmt("Wr GPR[x%d] <= 0x%08X", regnum, value));
     return RCODE_OK;
 }
 
@@ -574,6 +577,7 @@ int Backend::read_csr(const uint32_t regaddr, uint32_t &value) {
     // restore t0: dbg(t0_val) --> dscratch -csrr-> t0
     CHECK_ERR(dmreg_wr(DMReg_t::DSCRATCH, t0_val), "Failed to restore t0 value to DSCRATCH");
     CHECK_ERR(inject_instruction(strfmt("csrr t0, %d", RV_CSR_VX_DSCRATCH)), "Failed to restore t0 from DSCRATCH");
+    log_->debug(strfmt("Rd CSR[0x%03X] => 0x%08X", regaddr, value));
     return RCODE_OK;
 }
 
@@ -591,6 +595,7 @@ int Backend::write_csr(const uint32_t regaddr, const uint32_t value) {
     // restore t0: dbg(t0_val) --> dscratch -csrr-> t0
     CHECK_ERR(dmreg_wr(DMReg_t::DSCRATCH, t0_val), "Failed to restore t0 value to DSCRATCH");
     CHECK_ERR(inject_instruction(strfmt("csrr t0, %d", RV_CSR_VX_DSCRATCH)), "Failed to restore t0 from DSCRATCH");
+    log_->debug(strfmt("Wr CSR[0x%03X] <= 0x%08X", regaddr, value));
     return RCODE_OK;
 }
 

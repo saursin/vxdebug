@@ -3,6 +3,7 @@
 #include <argparse.h>
 #include "util.h"
 #include "backend.h"
+#include "gdbstub.h"
 
 #include <sstream>
 #include <algorithm>
@@ -54,6 +55,8 @@ VortexDebugger::VortexDebugger():
     register_command("mem",       {"m"},         "Memory operations", &VortexDebugger::cmd_mem);
     register_command("dmreg",     {"d"},         "Debug module register operations", &VortexDebugger::cmd_dmreg);
     register_command("break",     {"b"},         "Breakpoint operations", &VortexDebugger::cmd_break);
+    register_command("gdbserver", {"gdb"},       "Start GDB server", &VortexDebugger::cmd_gdbserver);
+
 }
 
 VortexDebugger::~VortexDebugger() {
@@ -715,5 +718,23 @@ int VortexDebugger::cmd_break(const std::vector<std::string>& args) {
         return 1;
     }
 
+    return 0;
+}
+
+int VortexDebugger::cmd_gdbserver(const std::vector<std::string>& args) {
+    ArgParse::ArgumentParser parser("gdbserver", "Start GDB server for remote debugging");
+    parser.add_argument({"--port"}, "Port to listen on", ArgParse::INT, "3333");
+    int rc = parser.parse_args(args);
+    if (rc != 0) return rc;
+
+    int port = parser.get<int>("port");
+    
+    // Start GDB server
+    GDBStub gdbstub(backend_);
+    rc = gdbstub.serve_forever(port);
+    if (rc != RCODE_OK) {
+        log_->error("Failed to start GDB server on port " + std::to_string(port));
+        return rc;
+    }   
     return 0;
 }
