@@ -33,8 +33,8 @@ GDBStub::GDBStub(Backend* backend):
     cmd_map_["G"]               = &GDBStub::cmd_write_regs;
     cmd_map_["p"]               = &GDBStub::cmd_read_reg;
     cmd_map_["P"]               = &GDBStub::cmd_write_reg;
-    // cmd_map_["m"]               = &GDBStub::cmd_read_mem;
-    // cmd_map_["M"]               = &GDBStub::cmd_write_mem;
+    cmd_map_["m"]               = &GDBStub::cmd_read_mem;
+    cmd_map_["M"]               = &GDBStub::cmd_write_mem;
     cmd_map_["c"]               = &GDBStub::cmd_continue;
     cmd_map_["s"]               = &GDBStub::cmd_step;
     // cmd_map_["Z"]               = &GDBStub::cmd_insert_bp;
@@ -228,6 +228,7 @@ void GDBStub::cmd_supported(const std::string& cmdstr) {
 // desc: Check if the remote server is attached to a running program
 // reply: '1' if attached to running program, '0' if started by gdb
 void GDBStub::cmd_attached(const std::string& cmdstr) {
+    (void)cmdstr;
     send_packet("1");
     is_attached_ = true;
 }
@@ -236,6 +237,7 @@ void GDBStub::cmd_attached(const std::string& cmdstr) {
 // desc: Query the reason behind the target halt
 // Reply: Signal that caused the target to stop
 void GDBStub::cmd_halted(const std::string& cmdstr) {
+    (void)cmdstr;
     // For now, always report SIGTRAP
     send_packet("S05");
 }
@@ -244,6 +246,7 @@ void GDBStub::cmd_halted(const std::string& cmdstr) {
 // desc: Detach the remote server from the target
 // reply: OK if successful
 void GDBStub::cmd_detach(const std::string& cmdstr) {
+    (void)cmdstr;
     is_attached_ = false;
     backend_->resume_warps();   // resume all warps on detach
     send_packet("OK");
@@ -262,6 +265,7 @@ void GDBStub::cmd_notfound(const std::string& cmdstr) {
 // Read general registers
 // reply: xxx... (concatenated register values, target dependent format)
 void GDBStub::cmd_read_regs(const std::string& cmdstr) {
+    (void)cmdstr;
     // For now, return dummy registers (32 regs, all zero)
     std::string reply;
     for (int i = 0; i < 32; ++i) {
@@ -354,9 +358,69 @@ void GDBStub::cmd_read_mem(const std::string& cmdstr) {
     size_t comma_pos = args.find(',');
     if (comma_pos == std::string::npos) {
         log_->error("Invalid read memory command: " + cmdstr);
+        send_packet("E01");
+        return;
+    }
+    std::string addr_s = args.substr(0, comma_pos);
+    std::string length_s = args.substr(comma_pos + 1);
+    uint32_t addr = static_cast<uint32_t>(strtoul(addr_s.c_str(), nullptr, 16));
+    uint32_t length = static_cast<uint32_t>(strtoul(length_s.c_str(), nullptr, 16));
+    std::vector<uint8_t> data;
+    int rc = backend_->read_mem(addr, length, data);
+    if (rc != RCODE_OK) {
+        send_packet("E01");
+        return;
+    }
+    // Send the memory contents as a hex string
+    std::string hex_data;
+    for (uint8_t byte : data) {
+        hex_data += strfmt("%02x", byte);
+    }
+    send_packet(hex_data);
+}
+
+
+// cmd: M addr,length:xx...
+// desc: Write memory
+// reply: OK if successful
+void GDBStub::cmd_write_mem(const std::string& cmdstr) {
+    std::string args = cmdstr.substr(1); // skip "M"
+    size_t colon_pos = args.find(':');
+    if (colon_pos == std::string::npos) {
+        log_->error("Invalid write memory command: " + cmdstr);
+        send_packet("E01");
+        return;
+    }
+    std::string addr_length_str = args.substr(0, colon_pos);
+    std::string data_str = args.substr(colon_pos + 1);
+    // Parse addr and length
+    size_t comma_pos = addr_length_str.find(',');
+    if (comma_pos == std::string::npos) {
+        log_->error("Invalid write memory command: " + cmdstr);
+        send_packet("E01");
+        return;
+    }
+    std::string addr_s = addr_length_str.substr(0, comma_pos);
+    std::string length_s = addr_length_str.substr(comma_pos + 1);
+    uint32_t addr = static_cast<uint32_t>(strtoul(addr_s.c_str(), nullptr, 16));
+    uint32_t length = static_cast<uint32_t>(strtoul(length_s.c_str(), nullptr, 16));
+
+    // Convert hex string to byte vector
+    std::vector<uint8_t> data;
+    for (size_t i = 0; i < data_str.length(); i += 2) {
+        std::string byte_str = data_str.substr(i, 2);
+        uint8_t byte = static_cast<uint8_t>(strtoul(byte_str.c_str(), nullptr, 16));
+        data.push_back(byte);
+    }
+
+    if (data.size() != length) {
+        log_->error("Data length mismatch in write memory command");
         send_packet("E02");
         return;
     }
+
+    int rc = backend_->write_mem(addr, data);
+    send_packet(rc == RCODE_OK ? "OK" : "E03");
 }
 
 

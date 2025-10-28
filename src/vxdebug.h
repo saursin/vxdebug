@@ -38,6 +38,7 @@ public:
     int cmd_dmreg(const std::vector<std::string>& args);
     int cmd_break(const std::vector<std::string>& args);
     int cmd_gdbserver(const std::vector<std::string>& args);
+    int cmd_param(const std::vector<std::string>& args);
 
 private:
     Logger *log_;

@@ -2,6 +2,7 @@
 #include "logger.h"
 #include <argparse.h>
 #include "util.h"
+#include "dmdefs.h"
 #include "backend.h"
 #include "gdbstub.h"
 
@@ -56,6 +57,7 @@ VortexDebugger::VortexDebugger():
     register_command("dmreg",     {"d"},         "Debug module register operations", &VortexDebugger::cmd_dmreg);
     register_command("break",     {"b"},         "Breakpoint operations", &VortexDebugger::cmd_break);
     register_command("gdbserver", {"gdb"},       "Start GDB server", &VortexDebugger::cmd_gdbserver);
+    register_command("param",     {},            "Get/Set debugger parameters", &VortexDebugger::cmd_param);
 
 }
 
@@ -242,7 +244,7 @@ std::string VortexDebugger::get_prompt() const {
         backend_->get_selected_warp_thread(selected_wid, selected_tid, true);
 
         uint32_t selected_pc;
-        backend_->get_selected_warp_pc(selected_pc, true);
+        backend_->get_warp_pc(selected_pc);
         
         if (selected_wid >= 0 && selected_tid >= 0) {
             prompt += strfmt(" [W%d:T%d, PC=0x%08X]", selected_wid, selected_tid, selected_pc);
@@ -350,7 +352,7 @@ int VortexDebugger::cmd_transport(const std::vector<std::string>& args) {
         if (rc != RCODE_OK) return rc;
 
     } else {
-        log_->error("No transport type specified");
+        log_->error("No transport type specified, see 'help transport' for usage.");
         return 1;
     }
    
@@ -373,24 +375,60 @@ int VortexDebugger::cmd_reset(const std::vector<std::string>& args) {
 int VortexDebugger::cmd_info(const std::vector<std::string>& args) {
     ArgParse::ArgumentParser parser("info", "Display information about the target");
     parser.add_argument({"info_type"}, "Type of information to display", ArgParse::STR, "", true, "", {"warps"});
+    parser.add_argument({"-w", "--wid"}, "List of warp IDs", ArgParse::STR, "", false, "", {}, "", "+");
+    parser.add_argument({"-l", "--long"}, "Display long format", ArgParse::BOOL, "false");
     int rc = parser.parse_args(args);
     if (rc != 0) {return rc;}
 
     const std::string& info_type = parser.get<std::string>("info_type");
+    const std::vector<std::string>& wids = parser.get_list<std::string>("wid");
+    bool long_format = parser.get<bool>("long");
 
     if (info_type == "warps") {
         log_->info("Retrieving warp status...");
-        std::map<int, std::pair<bool, uint32_t>> warp_status;
-        backend_->get_warp_status(warp_status, true);
-        std::string status = "Warp Status:\n";
-        for (const auto& [wid, status_pair] : warp_status) {
+        std::map<int, WarpStatus_t> warp_status;
+        backend_->get_warp_status(warp_status, true, true);
+        std::string status = "";
+        unsigned n_total = 0;
+        uint32_t n_active = 0;
+        uint32_t n_halted = 0;
+
+        for (const auto& [wid, status_tuple] : warp_status) {
+            if (!wids.empty() && std::find(wids.begin(), wids.end(), std::to_string(wid)) == wids.end()) {
+                continue; // skip if not in specified list
+            }
+            n_total++;
             int coreid = wid / backend_->state_.platinfo.num_warps;
-            bool halted = status_pair.first;
-            uint32_t pc = status_pair.second;
-            status += strfmt(" (Core:%d) Warp %2d: %s%-8s%s PC=", coreid, wid, (halted ? ANSI_RED: ANSI_GRN), (halted ? "Halted" : "Running"), ANSI_RST);
-            status += (halted ? strfmt("0x%08X", pc) : "?") + "\n";
+            bool active = status_tuple.active;
+            if (active) n_active++;
+            bool halted = status_tuple.halted;
+            if (halted) n_halted++;
+            uint32_t pc = status_tuple.pc;
+            uint32_t hacause = status_tuple.hacause;
+            std::string hacause_str = hacause_tostr(hacause);
+            
+            if(long_format) {
+                status += strfmt("  (Core:%d) Warp %2d: %s%-8s%s %s%-8s%s PC=", coreid, wid, 
+                    (active ? ANSI_GRN : ANSI_YLW), (active ? "Active" : ANSI_YLW "Inactive" ANSI_RST),
+                    (halted ? ANSI_RED: ANSI_GRN), (halted ? "Halted" : "Running"), ANSI_RST);
+                status += (halted ? strfmt("0x%08X (Cause %x: %s)", pc, hacause, hacause_str.c_str()) : "?") + "\n";
+            }
+            else {
+                uint32_t warps_per_row = backend_->state_.platinfo.num_warps;
+                status += strfmt("%3d:%s,%s:", wid, 
+                    (active ? ANSI_GRN "A" ANSI_RST : ANSI_YLW "I" ANSI_RST),
+                    (halted ? ANSI_RED "H" ANSI_RST : ANSI_GRN "R" ANSI_RST));
+                status += (halted ? strfmt("%08X ", pc) : "________ ") + " ";
+                if ((wid + 1) % warps_per_row == 0) {
+                    status += "\n";
+                }
+            }
         }
-        log_->info(status);
+        log_->info("Warp Status: \n" + strfmt("Showing status for %d warps: (Halted: %d warps)\n", n_total, n_halted) + status);
+    }
+    else {
+        log_->error("Unknown info type: " + info_type + ", see 'help info' for usage.");
+        return 1;
     }
     return 0;
 }
@@ -614,6 +652,10 @@ int VortexDebugger::cmd_reg(const std::vector<std::string>& args) {
         CHECK_ERRS(backend_->write_reg(name, reg_value));
         log_->info(strfmt("Register %s written with 0x%08X (%u)", name.c_str(), reg_value, reg_value));
     }
+    else {
+        log_->error("Invalid operation. See 'help reg' for usage.");
+        return 1;
+    }
 
     return 0;
 }
@@ -633,7 +675,7 @@ int VortexDebugger::cmd_mem(const std::vector<std::string>& args) {
     uint32_t address = parse_uint(parser.get<std::string>("address"));
     int length = parser.get<int>("length");
     if (operation == "r" || operation == "read") {
-        std::vector<uint8_t> mem_data(length);
+        std::vector<uint8_t> mem_data;
         CHECK_ERRS(backend_->read_mem(address, length, mem_data));
         int wpl = 4, bpw = 4;
         if(parser.get<bool>("bytes")) {
@@ -651,12 +693,16 @@ int VortexDebugger::cmd_mem(const std::vector<std::string>& args) {
         CHECK_ERRS(backend_->write_mem(address, mem_data));
         log_->info(strfmt("Wrote %zu bytes to address 0x%08X", mem_data.size(), address));
     }
+    else {
+        log_->error("Invalid operation. See 'help mem' for usage.");
+        return 1;
+    }
     return 0;
 }
 
 int VortexDebugger::cmd_dmreg(const std::vector<std::string>& args) {
     ArgParse::ArgumentParser parser("dmreg", "Debug module register operations");
-    parser.add_argument({"operation"}, "Operation: read or write", ArgParse::STR, "", true, "", {"read", "write"});
+    parser.add_argument({"operation"}, "Operation: read or write", ArgParse::STR, "", true, "", {"r", "read", "w", "write"});
     parser.add_argument({"name"}, "Register name", ArgParse::STR, "");
     parser.add_argument({"value"}, "Value to write (for write operations)", ArgParse::STR, "");
 
@@ -667,18 +713,20 @@ int VortexDebugger::cmd_dmreg(const std::vector<std::string>& args) {
     std::string name = parser.get<std::string>("name");
     std::string value = parser.get<std::string>("value");
 
-    if (operation == "read") {
-        log_->info("DM register read not yet implemented for: " + name);
-        // TODO: Implement DM register read
-    } else if (operation == "write") {
-        if (value.empty()) {
-            log_->error("Value required for write operation");
-            return 1;
-        }
-        log_->info("DM register write not yet implemented: " + name + " = " + value);
-        // TODO: Implement DM register write
-    } else {
-        log_->error("Invalid operation. Use 'read' or 'write'");
+    if (operation == "r" || operation == "read") {
+        uint32_t reg_value;
+        auto dmreg_id = get_dmreg_id(name);
+        CHECK_ERRS(backend_->dmreg_rd(dmreg_id, reg_value));
+        log_->info(strfmt("Rd DM[%s]: 0x%08X", name.c_str(), reg_value));
+    }
+    else if (operation == "w" || operation == "write") {
+        uint32_t reg_value = parse_uint(value);
+        auto dmreg_id = get_dmreg_id(name);
+        CHECK_ERRS(backend_->dmreg_wr(dmreg_id, reg_value));
+        log_->info(strfmt("Wr DM[%s]: 0x%08X", name.c_str(), reg_value));
+    } 
+    else {
+        log_->error("Invalid operation. See 'help dmreg' for usage.");
         return 1;
     }
 
@@ -736,5 +784,40 @@ int VortexDebugger::cmd_gdbserver(const std::vector<std::string>& args) {
         log_->error("Failed to start GDB server on port " + std::to_string(port));
         return rc;
     }   
+    return 0;
+}
+
+int VortexDebugger::cmd_param(const std::vector<std::string>& args) {
+    ArgParse::ArgumentParser parser("param", "Get/Set debugger parameters");
+    parser.add_argument({"operation"}, "Operation: get or set", ArgParse::STR, "", true, "", {"get", "set"});
+    parser.add_argument({"param_name"}, "Parameter name", ArgParse::STR, "");
+    parser.add_argument({"param_value"}, "Parameter value (for set operation)", ArgParse::STR, "");
+
+    int rc = parser.parse_args(args);
+    if (rc != 0) return rc;
+
+    std::string operation = parser.get<std::string>("operation");
+    std::string param_name = parser.get<std::string>("param_name");
+    std::string param_value = parser.get<std::string>("param_value");
+
+    if (operation == "get") {
+        if (param_name.empty()) {
+            log_->error("Parameter name required for get operation");
+            return 1;
+        }
+        std::string param_value = backend_->get_param(param_name);
+        log_->info(strfmt("Parameter %s = %s", param_name.c_str(), param_value.c_str()));
+    }
+    else if (operation == "set") {
+        if (param_name.empty() || param_value.empty()) {
+            log_->error("Parameter name and value required for set operation");
+            return 1;
+        }
+        backend_->set_param(param_name, param_value);
+    } 
+    else {
+        log_->error("Invalid operation. See 'help param' for usage.");
+        return 1;
+    }
     return 0;
 }

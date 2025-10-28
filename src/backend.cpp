@@ -4,6 +4,7 @@
 #include "util.h"
 #include <unistd.h>
 #include <cstring>   // for std::memcpy
+#include <cmath>    // for std::pow
 
 #include "riscv.h"
 
@@ -65,7 +66,34 @@ Backend::~Backend() {
     if (transport_) 
         delete transport_;
     if (log_)
-        delete log_;
+        delete log_;    
+}
+
+void Backend::set_param(const std::string &param, std::string value) {
+    if (param == "poll_retries") {
+        poll_retries_ = std::stoul(value);
+        log_->info("Set parameter poll_retries to " + value);
+    } 
+    else if (param == "poll_delay_ms") {
+        poll_delay_ms_ = std::stoul(value);
+        log_->info("Set parameter poll_delay_ms to " + value);
+    }
+    else {
+        log_->warn("Unknown parameter: " + param);
+    }
+}
+
+std::string Backend::get_param(const std::string &param) const {
+    if (param == "poll_retries") {
+        return std::to_string(poll_retries_);
+    } 
+    else if (param == "poll_delay_ms") {
+        return std::to_string(poll_delay_ms_);
+    }
+    else {
+        log_->warn("Unknown parameter: " + param);
+        return "?";
+    }
 }
 
 //==============================================================================
@@ -134,12 +162,7 @@ int Backend::initialize(bool quiet) {
     // Try to Wake DM
     log_->debug("Querying debug module status");
     CHECK_ERR(wake_dm(), "Failed to wake DM");
-
-    // Select warp 0, thread 0 by default
-    log_->debug("Assuming selected warp/thread = (0,0)");
-    state_.selected_wid = 0;
-    state_.selected_tid = 0;
-    
+   
     // Get platform info
     log_->debug("Fetching platform information...");
     CHECK_ERR(fetch_platform_info(), "Failed to fetch platform info");
@@ -211,17 +234,13 @@ int Backend::reset_platform(bool halt_warps) {
     uint32_t ndmreset = 1;
     CHECK_ERR(dmreg_pollfield(DMReg_t::DCTRL, "ndmreset", 0, &ndmreset), "Failed to poll DCTRL.ndmreset field after reset");
 
-    // Pre-read DCTRL to check warp halt status
-    log_->debug("Checking warp halt status after reset.");
-    uint32_t dctrl;
-    CHECK_ERR(dmreg_rd(DMReg_t::DCTRL, dctrl), 
-        "Failed to read DCTRL register");
-
     if(halt_warps) {
-        if(extract_dmreg_field(DMReg_t::DCTRL, "allhalted", dctrl)) {
+        bool allhalted, anyhalted;
+        CHECK_ERR(get_warp_summary(&allhalted, &anyhalted), "Failed to get warp halt summary after reset");   // updates the cache
+        if(allhalted) {
             log_->info("All warps halted after reset.");
         }
-        else if(extract_dmreg_field(DMReg_t::DCTRL, "anyhalted", dctrl)) {
+        else if(anyhalted) {
             log_->warn("Some warps halted after reset, but not all.");
         }
         else {
@@ -245,16 +264,47 @@ int Backend::fetch_platform_info() {
     state_.platinfo.num_clusters    = extract_dmreg_field(DMReg_t::PLATFORM, "numclusters", platform);
     state_.platinfo.num_cores       = extract_dmreg_field(DMReg_t::PLATFORM, "numcores", platform);
     state_.platinfo.num_warps       = extract_dmreg_field(DMReg_t::PLATFORM, "numwarps", platform);
-    state_.platinfo.num_threads     = 2*extract_dmreg_field(DMReg_t::PLATFORM, "numthreads", platform);
+    state_.platinfo.num_threads     = std::pow(2, extract_dmreg_field(DMReg_t::PLATFORM, "numthreads", platform));
     state_.platinfo.num_total_cores = state_.platinfo.num_clusters * state_.platinfo.num_cores;
     state_.platinfo.num_total_warps = state_.platinfo.num_total_cores * state_.platinfo.num_warps;
     state_.platinfo.num_total_threads = state_.platinfo.num_total_warps * state_.platinfo.num_threads;
 
+    // save curr warp/thread selection
+    bool saved = false;
+    int selected_wid = -1;
+    int selected_tid = -1;
+    if(state_.selected_wid >=0 && state_.selected_tid >=0) {
+        selected_wid = state_.selected_wid;
+        selected_tid = state_.selected_tid;
+        saved = true;
+    }
+
+    // switch to warp 0, thread 0
+    CHECK_ERR(select_warp_thread(0, 0), "Failed to select warp 0, thread 0");
+
+    // check if warp 0 is halted
+    bool w0_is_halted = false;
+    CHECK_ERR(get_warp_state(0, w0_is_halted), "Failed to get warp state");
+
+    if(!w0_is_halted) {
+        // halt warp 0
+        CHECK_ERR(halt_warps({0}), "Failed to halt warp 0");
+    }
+    
     // Obtain ISA Information
     uint32_t misa = 0;
     CHECK_ERR(read_csr(RV_CSR_MISA, misa), "Failed to read MISA CSR");
     state_.platinfo.misa = misa;
 
+    if(!w0_is_halted) {
+        // resume warp 0 if it was running before
+        CHECK_ERR(resume_warps({0}), "Failed to resume warp 0");
+    }
+
+    // restore previous warp/thread selection
+    if (saved) {
+        CHECK_ERR(select_warp_thread(selected_wid, selected_tid), "Failed to restore previously selected warp/thread");
+    }
     return RCODE_OK;
 }
 
@@ -305,15 +355,23 @@ int Backend::select_warp_thread(int g_wid, int tid) {
         log_->error("Invalid thread ID " + std::to_string(tid));
         return RCODE_INVALID_ARG;
     }
-    uint32_t dselect = 0;
-    CHECK_ERR(dmreg_rd(DMReg_t::DSELECT, dselect), "Failed to read DSELECT register");
-    
+    // uint32_t dselect = 0;
+    // CHECK_ERR(dmreg_rd(DMReg_t::DSELECT, dselect), "Failed to read DSELECT register");
+    // dselect = set_dmreg_field(DMReg_t::DSELECT, "warpsel", dselect, g_wid);
+    // dselect = set_dmreg_field(DMReg_t::DSELECT, "threadsel", dselect, tid);
+    // CHECK_ERR(dmreg_wr(DMReg_t::DSELECT, dselect), "Failed to write DSELECT register");
 
-    dselect = set_dmreg_field(DMReg_t::DSELECT, "warpsel", dselect, g_wid);
-    dselect = set_dmreg_field(DMReg_t::DSELECT, "threadsel", dselect, tid);
-    CHECK_ERR(dmreg_wr(DMReg_t::DSELECT, dselect), "Failed to write DSELECT register");
+    CHECK_ERR(dmreg_wrfield(DMReg_t::DSELECT, "warpsel", g_wid), "Failed to write DSELECT.warpsel field");
+    CHECK_ERR(dmreg_wrfield(DMReg_t::DSELECT, "threadsel", tid), "Failed to write DSELECT.threadsel field");
+
     state_.selected_wid = g_wid;
     state_.selected_tid = tid;
+    
+    // Update cached PC for the newly selected warp
+    uint32_t pc;
+    CHECK_ERR(dmreg_rd(DMReg_t::DPC, pc), "Failed to read DPC register for newly selected warp");
+    state_.selected_warp_pc = pc;
+
     log_->debug("Selected warp " + std::to_string(g_wid) + ", thread " + std::to_string(tid) + " for debugging.");
     return RCODE_OK;
 }
@@ -330,20 +388,9 @@ int Backend::get_selected_warp_thread(int &wid, int &tid, bool force_fetch) {
     return RCODE_OK;
 }
 
-int Backend::get_selected_warp_pc(uint32_t &pc, bool force_fetch) {
-    if (force_fetch) {
-        uint32_t dpc = 0;
-        CHECK_ERR(dmreg_rd(DMReg_t::DPC, dpc), "Failed to read DPC register");
-        state_.selected_warp_pc = dpc;
-    }
-    pc = state_.selected_warp_pc;
-    return RCODE_OK;
-}
-
-
 //----- Query Warp Status ------------------------------------------------------
 
-int Backend::get_warp_status(std::map<int, std::pair<bool, uint32_t>> &warp_status, bool include_pc) {
+int Backend::get_warp_status(std::map<int, WarpStatus_t> &warp_status, bool include_pc, bool include_hacause) {
     warp_status.clear();
 
     // Save current selection
@@ -355,6 +402,10 @@ int Backend::get_warp_status(std::map<int, std::pair<bool, uint32_t>> &warp_stat
         // Select win
         CHECK_ERR(dmreg_wrfield(DMReg_t::DSELECT, "winsel", win), "Failed to write DSELECT.winsel field");
 
+        // Read Wactive
+        uint32_t wactive = 0;
+        CHECK_ERR(dmreg_rd(DMReg_t::WACTIVE, wactive), "Failed to read WACTIVE register");
+
         // Read WSTATUS
         uint32_t wstatus = 0;
         CHECK_ERR(dmreg_rd(DMReg_t::WSTATUS, wstatus), "Failed to read WSTATUS register");
@@ -364,13 +415,19 @@ int Backend::get_warp_status(std::map<int, std::pair<bool, uint32_t>> &warp_stat
             int wid = win * 32 + bit;
             if (wid >= static_cast<int>(state_.platinfo.num_total_warps))
                 break;
+            bool active = (wactive >> bit) & 0x1;
             bool halted = (wstatus >> bit) & 0x1;
             uint32_t pc = 0;
-            if(halted && include_pc) {
+            uint32_t hacause = 0;
+            if(active && halted && include_pc) {
                 select_warp_thread(wid, 0);     // Changes current selection
                 CHECK_ERR(dmreg_rd(DMReg_t::DPC, pc), "Failed to read DPC register for warp " + std::to_string(wid));
             }
-            warp_status[wid] = std::make_pair(halted, pc);
+            if(active && halted && include_hacause) {
+                select_warp_thread(wid, 0);     // Changes current selection
+                CHECK_ERR(dmreg_rdfield(DMReg_t::DCTRL, "hacause", hacause), "Failed to read DCTRL.hacause field for warp " + std::to_string(wid));
+            }
+            warp_status[wid] = {wid, active, halted, pc, hacause};
         }
     }
     
@@ -381,23 +438,55 @@ int Backend::get_warp_status(std::map<int, std::pair<bool, uint32_t>> &warp_stat
     return RCODE_OK;
 }
 
-int Backend::get_warp_summary(bool *allhalted, bool *anyhalted, bool *allrunning, bool *anyrunning) {
+int Backend::get_warp_summary(bool *allhalted, bool *anyhalted, bool *allrunning, bool *anyrunning, bool *allunavail, bool *anyunavail) {
     uint32_t dctrl = 0;
     CHECK_ERR(dmreg_rd(DMReg_t::DCTRL, dctrl), "Failed to read DCTRL register");
+    bool bit_allhalted = extract_dmreg_field(DMReg_t::DCTRL, "allhalted", dctrl) ? true : false;
+    bool bit_anyhalted = extract_dmreg_field(DMReg_t::DCTRL, "anyhalted", dctrl) ? true : false;
+    bool bit_allrunning = extract_dmreg_field(DMReg_t::DCTRL, "allrunning", dctrl) ? true : false;
+    bool bit_anyrunning = extract_dmreg_field(DMReg_t::DCTRL, "anyrunning", dctrl) ? true : false;
+    bool bit_allunavail = extract_dmreg_field(DMReg_t::DCTRL, "allunavail", dctrl) ? true : false;
+    bool bit_anyunavail = extract_dmreg_field(DMReg_t::DCTRL, "anyunavail", dctrl) ? true : false;
+
+    // return values
     if(allhalted) {
-        *allhalted = extract_dmreg_field(DMReg_t::DCTRL, "allhalted", dctrl) ? true : false;
+        *allhalted = bit_allhalted;
     }
     if(anyhalted) {
-        *anyhalted = extract_dmreg_field(DMReg_t::DCTRL, "anyhalted", dctrl) ? true : false;
+        *anyhalted = bit_anyhalted;
     }
     if(allrunning) {
-        *allrunning = extract_dmreg_field(DMReg_t::DCTRL, "allrunning", dctrl) ? true : false;
+        *allrunning = bit_allrunning;
     }
     if(anyrunning) {
-        *anyrunning = extract_dmreg_field(DMReg_t::DCTRL, "anyrunning", dctrl) ? true : false;
+        *anyrunning = bit_anyrunning;
+    }
+    if(allunavail) {
+        *allunavail = bit_allunavail;
+    }
+    if(anyunavail) {
+        *anyunavail = bit_anyunavail;
     }
     return RCODE_OK;
 }
+
+int Backend::get_warp_state(int g_wid, bool &halted) {
+    if (g_wid < 0 || g_wid >= static_cast<int>(state_.platinfo.num_total_warps)) {
+        log_->error("Invalid global warp ID " + std::to_string(g_wid));
+        return RCODE_INVALID_ARG;
+    }
+
+    int win_idx = g_wid / 32;
+    CHECK_ERR(dmreg_wrfield(DMReg_t::DSELECT, "winsel", win_idx), "Failed to write DSELECT.winsel field");
+
+    uint32_t wstatus = 0;
+    CHECK_ERR(dmreg_rd(DMReg_t::WSTATUS, wstatus), "Failed to read WSTATUS register");
+    int bit_pos = g_wid % 32;
+
+    halted = ((wstatus >> bit_pos) & 0x1) ? true : false;
+    return RCODE_OK;
+}
+
 
 int Backend::get_warp_pc(uint32_t &pc) {
     CHECK_SELECTED();
@@ -417,20 +506,30 @@ int Backend::set_warp_pc(const uint32_t pc) {
 //----- Warp Control Methods ---------------------------------------------------
 
 int Backend::halt_warps(const std::vector<int> &wids) {
-    log_->info("Halting warps: " + std::to_string(wids.size()) + " warps");
-    
+    log_->info("Halting warps: " + vecjoin<int>(wids));
+
     // Select the specified warps
     CHECK_ERR(select_warps(wids), "Failed to select warps for halting");
 
     // Send halt request
     CHECK_ERR(dmreg_wrfield(DMReg_t::DCTRL, "haltreq", 1), "Failed to send halt request");
-    
-    // Check halt completion
-    uint32_t anyhalted;
-    CHECK_ERR(dmreg_pollfield(DMReg_t::DCTRL, "anyhalted", 1, &anyhalted), 
-        "Failed to poll halt status");
-    
-    log_->debug("Halt request sent for selected warps");
+       
+    bool ok = true;
+    for (int wid : wids) {
+        bool warp_is_halted = false;
+        CHECK_ERR(get_warp_state(wid, warp_is_halted), "Failed to get warp state after halt request");
+        if (!warp_is_halted) {
+            log_->warn("Warp " + std::to_string(wid) + " not halted after halt request");
+            ok = false;
+            continue;
+        }
+    }
+    if (!ok) {
+        log_->warn("Some warps failed to halt");
+        return RCODE_ERROR;
+    }
+
+    log_->debug("Successfully halted warps: " + vecjoin<int>(wids, ", "));
     return RCODE_OK;
 }
 
@@ -450,7 +549,7 @@ int Backend::halt_warps() {
         log_->warn("Not all warps halted after halt request");
     }
 
-    log_->debug("Halt request sent for all warps");
+    log_->debug("Successfully halted all warps");
     return RCODE_OK;
 }
 
@@ -462,8 +561,25 @@ int Backend::resume_warps(const std::vector<int> &wids) {
 
     // Send resume request
     CHECK_ERR(dmreg_wrfield(DMReg_t::DCTRL, "resumereq", 1), "Failed to send resume request");
-    
-    log_->debug("Resume request sent for selected warps");
+
+    // Check if given warps are running
+    std::map<int, WarpStatus_t> warp_status;
+    CHECK_ERR(get_warp_status(warp_status, false), "Failed to get warp status after resume request");     // also updates the halted_cache
+
+    bool ok = true;
+    for (int wid : wids) {
+        bool warp_is_halted = false;
+        CHECK_ERR(get_warp_state(wid, warp_is_halted), "Failed to get warp state after resume request");
+        if (warp_is_halted) {
+            log_->warn("Warp " + std::to_string(wid) + " not resumed after resume request");
+            ok = false;
+        }
+    }
+    if (!ok) {
+        log_->warn("Some warps failed to resume");
+        return RCODE_ERROR;
+    }
+    log_->debug("Successfully resumed warps: " + vecjoin<int>(wids, ", "));
     return RCODE_OK;
 }
 
@@ -479,19 +595,15 @@ int Backend::resume_warps() {
     // Poll until all warps running
     uint32_t allrunning;
     CHECK_ERR(dmreg_pollfield(DMReg_t::DCTRL, "allrunning", 1, &allrunning), "Failed to poll resume status");
-    if(allrunning == 0) {
-        log_->warn("Not all warps running after resume request");
-    }
-    else {
-        log_->info("All warps resumed successfully");
-    }
+    
+    log_->debug("Successfully resumed all warps");
     return RCODE_OK;
 }
 
 int Backend::step_warp() {
     CHECK_SELECTED();
     bool all_halted = false;
-    CHECK_ERR(get_warp_summary(&all_halted, nullptr, nullptr, nullptr), "Failed to get warp summary before stepping");
+    CHECK_ERR(get_warp_summary(&all_halted), "Failed to get warp summary before stepping");
     if (all_halted) log_->warn("All warps are halted, Stepping a warp may cause deadlock.");
 
     // Send step request
@@ -499,7 +611,7 @@ int Backend::step_warp() {
 
     // Poll for step completion
     uint32_t stepstate;
-    CHECK_ERR(dmreg_pollfield(DMReg_t::DCTRL, "stepstate", 0, &stepstate), "Failed to poll step state");
+    CHECK_ERR(dmreg_pollfield(DMReg_t::DCTRL, "stepstate", 0, &stepstate), "Failed to poll step state");    
     
     // Read updated PC
     uint32_t warp_pc;
@@ -510,9 +622,16 @@ int Backend::step_warp() {
     return RCODE_OK;
 }
 
+int Backend::get_halt_cause(uint32_t &hacause) {
+    CHECK_SELECTED();
+    CHECK_ERR(dmreg_rdfield(DMReg_t::DCTRL, "cause", hacause), "Failed to read HACAUSE register");
+    log_->debug(strfmt("Rd HACAUSE => 0x%08X", hacause));
+    return RCODE_OK;
+}
+
 int Backend::inject_instruction(uint32_t instruction) {
     CHECK_SELECTED();
-       
+
     // Write instruction to DINJECT register
     CHECK_ERR(dmreg_wr(DMReg_t::DINJECT, instruction), 
         "Failed to write instruction to DINJECT register");
@@ -530,7 +649,6 @@ int Backend::inject_instruction(uint32_t instruction) {
 }
 
 int Backend::inject_instruction(const std::string &asm_instr) {
-    CHECK_SELECTED();
     // Assemble instruction
     auto instrs = rv_asm({asm_instr});
     if (instrs.size() != 1) {

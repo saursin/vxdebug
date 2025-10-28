@@ -2,6 +2,7 @@
 #include <string>
 #include <vector>
 #include <map>
+#include <unordered_map>
 #include <cstdint>
 
 #include "dmdefs.h"
@@ -19,6 +20,14 @@ class Transport;
 class Logger;
 class Backend;
 
+struct WarpStatus_t {
+    int wid;
+    bool active;
+    bool halted;
+    uint32_t pc;
+    uint32_t hacause;
+};
+
 ////////////////////////////////////////////////////////////////////////////////
 // Backend class
 ////////////////////////////////////////////////////////////////////////////////
@@ -26,6 +35,8 @@ class Backend {
 public:
     Backend();
     ~Backend();
+    void set_param(const std::string &param, std::string value);
+    std::string get_param(const std::string &param) const;
 
     //==========================================================================
     // Transport management
@@ -71,15 +82,17 @@ public:
     
     // Get selected warp and thread IDs
     int get_selected_warp_thread(int &wid, int &tid, bool force_fetch = false);
-    int get_selected_warp_pc(uint32_t &pc, bool force_fetch = false);
 
 
     //----- Query Warp Status --------------
     // Returns a map of warp ID to (halted status, PC value)
-    int get_warp_status(std::map<int, std::pair<bool, uint32_t>> &warp_status, bool include_pc = true);
+    int get_warp_status(std::map<int, WarpStatus_t> &warp_status, bool include_pc = true, bool include_hacause = true);
     
     // Check if all/any warps are halted/running
-    int get_warp_summary(bool *allhalted, bool *anyhalted, bool *allrunning, bool *anyrunning);
+    int get_warp_summary(bool *allhalted=nullptr, bool *anyhalted=nullptr, bool *allrunning=nullptr, bool *anyrunning=nullptr, bool *allunavail=nullptr, bool *anyunavail=nullptr);
+
+    // Get halted state of a specific warp
+    int get_warp_state(int wid, bool &halted);
 
     // Read program counter of selected warp/thread
     int get_warp_pc(uint32_t &pc);
@@ -103,6 +116,9 @@ public:
 
     // Step currently selected warp/thread
     int step_warp();
+
+    // Get the halt cause of the selected warp/thread
+    int get_halt_cause(uint32_t &hacause);
 
     // Inject a single instruction into the selected warp/thread
     int inject_instruction(uint32_t instruction);
@@ -147,6 +163,8 @@ private:
 
     // Current Debugger state
     struct State_t {
+        
+        // ----- Cache -----
         int selected_wid = -1;
         int selected_tid = -1;
         uint32_t selected_warp_pc = 0;
