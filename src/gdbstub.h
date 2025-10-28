@@ -37,8 +37,8 @@ private:
     void cmd_write_mem(const std::string& cmdstr);
     void cmd_continue(const std::string& cmdstr);
     void cmd_step(const std::string& cmdstr);
-    // void cmd_insert_bp(const std::string& cmdstr);
-    // void cmd_remove_bp(const std::string& cmdstr);
+    void cmd_insert_bp(const std::string& cmdstr);
+    void cmd_remove_bp(const std::string& cmdstr);
     // void cmd_kill(const std::string& cmdstr);
     // void cmd_thread_select(const std::string& cmdstr);
     // void cmd_vcont_query(const std::string& cmdstr);

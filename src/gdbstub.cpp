@@ -216,11 +216,12 @@ void GDBStub::send_ack() {
 void GDBStub::cmd_supported(const std::string& cmdstr) {
     std::string args = cmdstr.substr(11); // skip "qSupported:"
     std::vector<std::string> features = tokenize(args, ';');
-
     std::string reply = "PacketSize=4096;";
-    if(std::find(features.begin(), features.end(), "hwbreak+") != features.end()) {
-        reply += "hwbreak+;";
+    // Advertise software breakpoint support
+    if(std::find(features.begin(), features.end(), "swbreak+") != features.end()) {
+        reply += "swbreak+;";
     }
+
     send_packet(reply);
 }
 

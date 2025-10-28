@@ -749,23 +749,26 @@ int VortexDebugger::cmd_break(const std::vector<std::string>& args) {
             log_->error("Address required for set operation");
             return 1;
         }
-        log_->info("Breakpoint set not yet implemented at: " + address);
-        // TODO: Implement breakpoint set
-    } else if (operation == "del") {
+        backend_->set_breakpoint(parse_uint(address));        
+    } 
+    else if (operation == "del") {
         if (address.empty()) {
             log_->error("Address required for del operation");
             return 1;
         }
-        log_->info("Breakpoint delete not yet implemented at: " + address);
-        // TODO: Implement breakpoint delete
-    } else if (operation == "ls") {
-        log_->info("Breakpoint list not yet implemented");
-        // TODO: Implement breakpoint list
-    } else {
-        log_->error("Invalid operation. Use 'set', 'del', or 'ls'");
+        backend_->remove_breakpoint(parse_uint(address));
+    } 
+    else if (operation == "ls") {
+        std::unordered_map<uint32_t, BreakPointInfo_t> baddrs = backend_->get_breakpoints();
+        log_->info("Current breakpoints:");
+        for (const auto& [addr, info] : baddrs) {
+            log_->info(strfmt(" - 0x%08X : instr=0x%08X", addr, info.replaced_instr));
+        }
+    } 
+    else {
+        log_->error("Invalid operation. See 'help break' for usage.");
         return 1;
     }
-
     return 0;
 }
 

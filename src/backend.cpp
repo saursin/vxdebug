@@ -953,6 +953,87 @@ int Backend::write_mem(const uint32_t addr, const std::vector<uint8_t> &data) {
     return RCODE_OK;
 }
 
+// ----- Breakpoint Management -------------------------------------------------
+
+int Backend::set_breakpoint(uint32_t addr) {
+    // Check if breakpoint already exists
+    auto it = breakpoints_.find(addr);
+    if (it != breakpoints_.end() && it->second.enabled) {
+        log_->warn(strfmt("Breakpoint already exists at 0x%08X", addr));
+        return RCODE_OK;
+    }
+
+    // Get instruction at address
+    WordBytes_t instr;
+    std::vector<uint8_t> instr_data;
+    CHECK_ERR(read_mem(addr, 4, instr_data), "Failed to read instruction for breakpoint");
+    std::copy(instr_data.begin(), instr_data.begin() + 4, instr.bytes);
+
+    // Write ebreak instruction at the address
+    WordBytes_t ebreak_instr;
+    ebreak_instr.word = rv_asm({"ebreak"}).at(0);
+    std::vector<uint8_t> ebreak_data(ebreak_instr.bytes, ebreak_instr.bytes + 4);
+    CHECK_ERR(write_mem(addr, ebreak_data), "Failed to write ebreak instruction for breakpoint");
+    
+    // Add to breakpoint table
+    BreakPointInfo_t bpinfo = {
+        .enabled = true,
+        .addr = addr,
+        .replaced_instr = instr.word,
+        .hit_count = 0
+    };
+    breakpoints_[addr] = bpinfo;    // insert new breakpoint
+
+    log_->info(strfmt("Breakpoint set at 0x%08X", addr));
+    return RCODE_OK;
+}
+
+int Backend::remove_breakpoint(uint32_t addr) {
+    // Find breakpoint
+    auto it = breakpoints_.find(addr);
+    if (it == breakpoints_.end() || !it->second.enabled) {
+        log_->warn(strfmt("No breakpoint found at 0x%08X", addr));
+        return RCODE_OK;
+    }
+
+    // Restore original instruction
+    WordBytes_t orig_instr;
+    orig_instr.word = it->second.replaced_instr;
+    std::vector<uint8_t> orig_data(orig_instr.bytes, orig_instr.bytes + 4);
+    CHECK_ERR(write_mem(addr, orig_data), "Failed to restore original instruction for breakpoint");
+
+    // Remove from breakpoint table
+    breakpoints_.erase(it);
+
+    log_->info(strfmt("Breakpoint removed at 0x%08X", addr));
+    return RCODE_OK;
+}
+
+std::unordered_map<uint32_t, BreakPointInfo_t> Backend::get_breakpoints() const {
+    return breakpoints_;
+}
+
+int Backend::any_breakpoints(bool &anybps) const {
+    for (const auto& [addr, bpinfo] : breakpoints_) {
+        if (bpinfo.enabled) {
+            anybps = true;
+            return RCODE_OK;
+        }
+    }
+    anybps = false;
+    return RCODE_OK;
+}
+
+int Backend::continue_until_breakpoint() {
+    log_->info("Continuing execution until breakpoint is hit");
+
+    // Resume all warps
+    CHECK_ERR(resume_warps(), "Failed to resume warps");
+
+    log_->warn("continue until breakpoint not supported yet");
+    return RCODE_OK;
+
+}
 
 //==============================================================================
 // Helpers

@@ -20,6 +20,14 @@ class Transport;
 class Logger;
 class Backend;
 
+struct BreakPointInfo_t {
+    bool enabled = false;       // Is the breakpoint enabled?
+    uint32_t addr = 0;          // Address of the breakpoint
+    uint32_t replaced_instr;    // Original instruction replaced by breakpoint
+    uint32_t hit_count = 0;     // Number of times breakpoint has been hit
+};
+
+
 struct WarpStatus_t {
     int wid;
     bool active;
@@ -146,6 +154,14 @@ public:
     int read_mem(const uint32_t addr, const uint32_t nbytes, std::vector<uint8_t> &data);
     int write_mem(const uint32_t addr, const std::vector<uint8_t> &data);
 
+    // ----- Breakpoint Management -----
+    int set_breakpoint(uint32_t addr);
+    int remove_breakpoint(uint32_t addr);
+    std::unordered_map<uint32_t, BreakPointInfo_t> get_breakpoints() const;
+    int any_breakpoints(bool &anybps) const;
+
+    int continue_until_breakpoint();
+
 
     // ----- Accessors -----
     int get_num_warps() const { return state_.platinfo.num_total_warps; }
@@ -160,6 +176,7 @@ private:
     // Parameters
     unsigned poll_retries_    = DEFAULT_POLL_RETRIES;
     unsigned poll_delay_ms_   = DEFAULT_POLL_DELAY_MS;
+    bool use_emulated_breakpoints_ = false;
 
     // Current Debugger state
     struct State_t {
@@ -168,6 +185,7 @@ private:
         int selected_wid = -1;
         int selected_tid = -1;
         uint32_t selected_warp_pc = 0;
+        // -----------------
 
         struct PlatformInfo {
             uint32_t platform_id;
@@ -183,7 +201,9 @@ private:
         } platinfo;
 
     } state_;
-    
+
+    std::unordered_map<uint32_t, BreakPointInfo_t> breakpoints_;
+
     //==============================================================================
     // Helpers
     //==============================================================================
