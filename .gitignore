@@ -3,4 +3,4 @@ build/
 .bak/
 *.log
 tmp/
-.vxdbg_history
+.*_history

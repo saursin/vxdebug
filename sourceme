@@ -1,5 +1,8 @@
 VXDEBUG=$(dirname -- "$(readlink -f "${BASH_SOURCE}")")
+
+### Handy alias for launching VxDebug
 alias vxdbg=$VXDEBUG/build/vxdebug
 
-# Load riscv-toolchain
+### Add RISC-V toolchain to PATH
+# export PATH=$HOME/opt/riscv64-gnu-toolchain/bin:$PATH
 # module load riscv 

@@ -180,7 +180,12 @@ int VortexDebugger::start_cli() {
         } else {
             prev_input = input;
         #ifdef USE_READLINE
-            add_history(input.c_str());
+            if (!input.empty()) {
+                HIST_ENTRY* last = history_get(history_length);
+                if (!last || input != last->line) {
+                    add_history(input.c_str());
+                }
+            }
         #endif
         }
 
@@ -215,7 +220,7 @@ int VortexDebugger::__execute_line(const std::string &input) {
     try {
         result = execute_command(cmd, toks);
     } catch (const std::exception &e) {
-        log_->error(e.what());
+        log_->error("Caught Exception: " + std::string(e.what()));
     }
 
     if (result != RCODE_OK) {
@@ -374,7 +379,7 @@ int VortexDebugger::cmd_reset(const std::vector<std::string>& args) {
 
 int VortexDebugger::cmd_info(const std::vector<std::string>& args) {
     ArgParse::ArgumentParser parser("info", "Display information about the target");
-    parser.add_argument({"info_type"}, "Type of information to display", ArgParse::STR, "", true, "", {"warps"});
+    parser.add_argument({"info_type"}, "Type of information to display", ArgParse::STR, "warps", false, "", {"w", "warps", "p", "platform"});
     parser.add_argument({"-w", "--wid"}, "List of warp IDs", ArgParse::STR, "", false, "", {}, "", "+");
     parser.add_argument({"-l", "--long"}, "Display long format", ArgParse::BOOL, "false");
     int rc = parser.parse_args(args);
@@ -384,7 +389,7 @@ int VortexDebugger::cmd_info(const std::vector<std::string>& args) {
     const std::vector<std::string>& wids = parser.get_list<std::string>("wid");
     bool long_format = parser.get<bool>("long");
 
-    if (info_type == "warps") {
+    if (info_type == "warps" || info_type == "w") {
         log_->info("Retrieving warp status...");
         std::map<int, WarpStatus_t> warp_status;
         backend_->get_warp_status(warp_status, true, true);
@@ -406,25 +411,56 @@ int VortexDebugger::cmd_info(const std::vector<std::string>& args) {
             uint32_t pc = status_tuple.pc;
             uint32_t hacause = status_tuple.hacause;
             std::string hacause_str = hacause_tostr(hacause);
+
+            std::string active_status_clr, active_status_str;
+            std::string haltrun_status_clr, haltrun_status_str;
+            bool show_pc = false;
+            bool show_cause = false;
+
+            if (active) {
+                active_status_clr = ANSI_GRN;
+                active_status_str = "Active";
+                haltrun_status_clr = halted ? ANSI_RED : ANSI_GRN;
+                haltrun_status_str = halted ? "Halted" : "Running";
+                show_pc = halted ? true : false;
+                show_cause = halted ? true : false;
+            } 
+            else {
+                active_status_clr = ANSI_YLW;
+                active_status_str = "Inactive";
+                haltrun_status_clr = ANSI_GRY;
+                haltrun_status_str = halted ? "Halted" : "Unhalted";
+                show_pc = true;
+                show_cause = true;
+            }
             
             if(long_format) {
-                status += strfmt("  (Core:%d) Warp %2d: %s%-8s%s %s%-8s%s PC=", coreid, wid, 
-                    (active ? ANSI_GRN : ANSI_YLW), (active ? "Active" : ANSI_YLW "Inactive" ANSI_RST),
-                    (halted ? ANSI_RED: ANSI_GRN), (halted ? "Halted" : "Running"), ANSI_RST);
-                status += (halted ? strfmt("0x%08X (Cause %x: %s)", pc, hacause, hacause_str.c_str()) : "?") + "\n";
+                status += strfmt("  (Core:%d) Warp %2d: %s%-8s" ANSI_RST " %s%-8s" ANSI_RST "  PC=", coreid, wid, 
+                    active_status_clr.c_str(), active_status_str.c_str(),
+                    haltrun_status_clr.c_str(), haltrun_status_str.c_str());
+                    status += ANSI_BLU + (show_pc ? strfmt("0x%08X ", pc) : "0x________ ") + ANSI_RST;
+                status += show_cause ? strfmt("(Cause %x: %s)", hacause, hacause_str.c_str()) : "";
+                status += "\n";
             }
             else {
                 uint32_t warps_per_row = backend_->state_.platinfo.num_warps;
-                status += strfmt("%3d:%s,%s:", wid, 
-                    (active ? ANSI_GRN "A" ANSI_RST : ANSI_YLW "I" ANSI_RST),
-                    (halted ? ANSI_RED "H" ANSI_RST : ANSI_GRN "R" ANSI_RST));
-                status += (halted ? strfmt("%08X ", pc) : "________ ") + " ";
+                status += strfmt("%3d:%s%s" ANSI_RST ",%s%s" ANSI_RST ":", wid,
+                    active_status_clr.c_str(), active_status_str.substr(0, 1).c_str(),
+                    haltrun_status_clr.c_str(), haltrun_status_str.substr(0, 1).c_str());
+
+                status += ANSI_BLU + (show_pc ? strfmt("0x%08X", pc) : "0x________") + ANSI_RST;
+                status += show_cause ? strfmt(",%s", hacause_str.substr(0, 1).c_str()) : "  ";
+                status += "  ";
                 if ((wid + 1) % warps_per_row == 0) {
                     status += "\n";
                 }
             }
         }
         log_->info("Warp Status: \n" + strfmt("Showing status for %d warps: (Halted: %d warps)\n", n_total, n_halted) + status);
+    }
+    else if (info_type == "platform" || info_type == "p") {
+        auto platinfo_str = backend_->_get_platform_info_str();
+        log_->info("Platform Information:\n" + platinfo_str);
     }
     else {
         log_->error("Unknown info type: " + info_type + ", see 'help info' for usage.");
@@ -523,6 +559,13 @@ int VortexDebugger::cmd_continue(const std::vector<std::string>& args) {
     if (continue_all) {                 // Continue all warps
         log_->info("Continuing all warps...");
         backend_->resume_warps();
+
+        bool any_breakpoints;
+        CHECK_ERRS(backend_->any_breakpoints(any_breakpoints));
+        if (any_breakpoints) {
+            log_->info("Breakpoints set, Continuing until breakpoint...");
+            backend_->until_breakpoint(true);
+        }
     } 
     else if (!wids_list.empty()) {      // Continue specific warps
         std::vector<int> wids;
@@ -600,8 +643,8 @@ int VortexDebugger::cmd_select(const std::vector<std::string>& args) {
 
 int VortexDebugger::cmd_stepi(const std::vector<std::string>& args) {
     ArgParse::ArgumentParser parser("stepi", "Single step instruction execution");
-    parser.add_argument({"-c", "--count"}, "Number of steps to execute", ArgParse::INT, "1");
-    
+    parser.add_argument({"count"}, "Number of instructions to step", ArgParse::INT, "1");
+        
     int rc = parser.parse_args(args);
     if (rc != 0) return rc;
 
@@ -621,13 +664,39 @@ int VortexDebugger::cmd_stepi(const std::vector<std::string>& args) {
 
 int VortexDebugger::cmd_inject(const std::vector<std::string>& args) {
     ArgParse::ArgumentParser parser("inject", "Inject instruction into selected warp/thread");
-    parser.add_argument({"--asm"}, "Assembly instruction to assemble and inject (alternative to raw instruction)", ArgParse::STR, "");
     parser.add_argument({"instruction"}, "32-bit instruction value (hex or decimal)", ArgParse::STR, "", true);
         
     int rc = parser.parse_args(args);
     if (rc != 0) return rc;
 
-    // todo:
+    // check if a warp is selected
+    int selected_wid, selected_tid;
+    backend_->get_selected_warp_thread(selected_wid, selected_tid, true);
+    if (selected_wid < 0 || selected_tid < 0) {
+        log_->error("No warp/thread selected for instruction injection");
+        return 1;
+    }
+
+    // check if current warp is halted
+    bool is_halted;
+    CHECK_ERRS(backend_->get_warp_state(backend_->state_.selected_wid, is_halted));
+    if (!is_halted) {
+        log_->error("Cannot inject instruction: selected warp is not halted");
+        return 1;
+    }
+
+    // Get instruction to inject
+    std::string instr = parser.get<std::string>("instruction");
+    try {
+        uint32_t instr_word = parse_uint(instr);
+        CHECK_ERRS(backend_->inject_instruction(instr_word));
+    } catch (const std::exception& e) {
+        // If parsing as uint failed, treat as assembly instruction
+        std::string asm_instr = instr;
+        CHECK_ERRS(backend_->inject_instruction(asm_instr));
+    }
+    
+    log_->info("Injected instruction into warp " + std::to_string(selected_wid) + ", thread " + std::to_string(selected_tid));
     return 0;
 }
 

@@ -416,7 +416,7 @@ void GDBStub::cmd_write_mem(const std::string& cmdstr) {
 
     if (data.size() != length) {
         log_->error("Data length mismatch in write memory command");
-        send_packet("E02");
+        send_packet("E02");     // FIXME: Is this correct error code?
         return;
     }
 
@@ -436,8 +436,17 @@ void GDBStub::cmd_continue(const std::string& cmdstr) {
     }
 
     int selected_wid, selected_tid;
-    backend_->get_selected_warp_thread(selected_wid, selected_tid, true);
-    backend_->resume_warps({selected_wid});
+    backend_->get_selected_warp_thread(selected_wid, selected_tid, true);  
+    if(backend_->resume_warps({selected_wid}) != RCODE_OK) {
+        log_->error("Failed to resume the selected warp/thread");
+        send_packet("E01");     // FIXME: Is this correct error code?
+        return;
+    }
+    if(backend_->until_breakpoint() != RCODE_OK) {
+        log_->error("Failed to continue execution until breakpoint");
+        send_packet("E01");     // FIXME: Is this correct error code?
+        return;
+    }
 
     // For now, immediately report halt with SIGTRAP
     send_packet("S05");
@@ -453,7 +462,11 @@ void GDBStub::cmd_step(const std::string& cmdstr) {
         uint32_t addr = static_cast<uint32_t>(strtoul(args.c_str(), nullptr, 16));
         backend_->set_warp_pc(addr);
     }
-    backend_->step_warp();
+    if(backend_->step_warp() != RCODE_OK) {
+        log_->error("Failed to step the selected warp/thread");
+        send_packet("E01");         // FIXME: Is this correct error code?
+        return;
+    }
 
     // After step, report halt with SIGTRAP
     send_packet("S05");

@@ -36,6 +36,15 @@ struct WarpStatus_t {
     uint32_t hacause;
 };
 
+struct WarpSummary_t {
+    bool allhalted;
+    bool anyhalted;
+    bool allrunning;
+    bool anyrunning;
+    bool allunavail;
+    bool anyunavail;
+};
+
 ////////////////////////////////////////////////////////////////////////////////
 // Backend class
 ////////////////////////////////////////////////////////////////////////////////
@@ -71,6 +80,9 @@ public:
     // Wakes up the Debug Module
     int wake_dm();
 
+    // Sets up the Debug Module
+    int setup_dm();
+
     // Resets the target system, optionally halting all warps after reset
     int reset_platform(bool halt=false);
 
@@ -97,7 +109,7 @@ public:
     int get_warp_status(std::map<int, WarpStatus_t> &warp_status, bool include_pc = true, bool include_hacause = true);
     
     // Check if all/any warps are halted/running
-    int get_warp_summary(bool *allhalted=nullptr, bool *anyhalted=nullptr, bool *allrunning=nullptr, bool *anyrunning=nullptr, bool *allunavail=nullptr, bool *anyunavail=nullptr);
+    int get_warp_summary(WarpSummary_t &summary);
 
     // Get halted state of a specific warp
     int get_warp_state(int wid, bool &halted);
@@ -107,6 +119,9 @@ public:
     
     // Write program counter of selected warp/thread
     int set_warp_pc(const uint32_t pc);
+
+    // Get the halt cause of selected warp
+    int get_warp_hacause(uint32_t &hacause);
 
 
     //----- Warp Control -----------------
@@ -125,10 +140,10 @@ public:
     // Step currently selected warp/thread
     int step_warp();
 
-    // Get the halt cause of the selected warp/thread
-    int get_halt_cause(uint32_t &hacause);
-
     // Inject a single instruction into the selected warp/thread
+    // NOTE: 
+    //  - to enable fast injection, it skips selected/halted checks
+    //  - Caller must make sure a warp is selected and halted
     int inject_instruction(uint32_t instruction);
     int inject_instruction(const std::string &asm_instr);
     
@@ -155,13 +170,18 @@ public:
     int write_mem(const uint32_t addr, const std::vector<uint8_t> &data);
 
     // ----- Breakpoint Management -----
+    // Set/Remove breakpoints
     int set_breakpoint(uint32_t addr);
     int remove_breakpoint(uint32_t addr);
+
+    // Get breakpoints
     std::unordered_map<uint32_t, BreakPointInfo_t> get_breakpoints() const;
+
+    // Check if any breakpoints are set
     int any_breakpoints(bool &anybps) const;
 
-    int continue_until_breakpoint();
-
+    // Continue execution until any warp hits a breakpoint
+    int until_breakpoint(bool auto_select = false);
 
     // ----- Accessors -----
     int get_num_warps() const { return state_.platinfo.num_total_warps; }
@@ -207,7 +227,7 @@ private:
     //==============================================================================
     // Helpers
     //==============================================================================
-    void _print_platform_info() const;
+    std::string _get_platform_info_str() const;
 
     //==============================================================================
     // Low-level DM register access

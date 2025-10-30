@@ -5,6 +5,7 @@
 #include <unistd.h>
 #include <cstring>   // for std::memcpy
 #include <cmath>    // for std::pow
+#include <thread>
 
 #include "riscv.h"
 
@@ -46,6 +47,16 @@
         log_->error("No warp/thread selected"); \
         return RCODE_NONESELECTED_ERR; \
     }
+
+#define CHECK_HALTED() \
+    do { \
+        bool is_halted = false; \
+        CHECK_ERR(get_warp_state(state_.selected_wid, is_halted), "Failed to get selected warp state"); \
+        if (!is_halted) { \
+            log_->error("Selected warp is not halted"); \
+            return RCODE_WARP_NOT_HALTED; \
+        } \
+    } while(0)
 
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -162,6 +173,10 @@ int Backend::initialize(bool quiet) {
     // Try to Wake DM
     log_->debug("Querying debug module status");
     CHECK_ERR(wake_dm(), "Failed to wake DM");
+
+    // Setup DM
+    log_->debug("Setting up debug module");
+    CHECK_ERR(setup_dm(), "Failed to set up DM");
    
     // Get platform info
     log_->debug("Fetching platform information...");
@@ -170,7 +185,10 @@ int Backend::initialize(bool quiet) {
     log_->debug("Backend initialized!");
 
     // Print platform info
-    if (!quiet) _print_platform_info();
+    if (!quiet) {
+        auto platinfo_str = _get_platform_info_str();
+        log_->info("Platform Information:\n" + platinfo_str);
+    }
     return RCODE_OK;
 }
 
@@ -213,6 +231,19 @@ int Backend::wake_dm() {
     return RCODE_OK;
 }
 
+int Backend::setup_dm() {
+    // Enable ebreak halt for breakpoints
+    CHECK_ERR(dmreg_wrfield(DMReg_t::DCONFIG, "ebreakh", 1), "Failed to set DCONFIG.ebreakh field");
+
+    // Clear select register
+    // - Selects warp 0, thread 0
+    // - Select window 0
+    CHECK_ERR(dmreg_wr(DMReg_t::DSELECT, 0), "Failed to write DSELECT register");
+    state_.selected_wid = 0;
+    state_.selected_tid = 0;
+    return RCODE_OK;
+}
+
 int Backend::reset_platform(bool halt_warps) {
     // Issue system reset via DCTRL.ndmreset
     log_->info("Issuing system reset...");
@@ -235,12 +266,12 @@ int Backend::reset_platform(bool halt_warps) {
     CHECK_ERR(dmreg_pollfield(DMReg_t::DCTRL, "ndmreset", 0, &ndmreset), "Failed to poll DCTRL.ndmreset field after reset");
 
     if(halt_warps) {
-        bool allhalted, anyhalted;
-        CHECK_ERR(get_warp_summary(&allhalted, &anyhalted), "Failed to get warp halt summary after reset");   // updates the cache
-        if(allhalted) {
+        WarpSummary_t wsummary;
+        CHECK_ERR(get_warp_summary(wsummary), "Failed to get warp halt summary after reset");
+        if(wsummary.allhalted) {
             log_->info("All warps halted after reset.");
         }
-        else if(anyhalted) {
+        else if(wsummary.anyhalted) {
             log_->warn("Some warps halted after reset, but not all.");
         }
         else {
@@ -369,8 +400,8 @@ int Backend::select_warp_thread(int g_wid, int tid) {
     
     // Update cached PC for the newly selected warp
     uint32_t pc;
-    CHECK_ERR(dmreg_rd(DMReg_t::DPC, pc), "Failed to read DPC register for newly selected warp");
-    state_.selected_warp_pc = pc;
+    get_warp_pc(pc);
+    (void)pc;
 
     log_->debug("Selected warp " + std::to_string(g_wid) + ", thread " + std::to_string(tid) + " for debugging.");
     return RCODE_OK;
@@ -417,15 +448,15 @@ int Backend::get_warp_status(std::map<int, WarpStatus_t> &warp_status, bool incl
                 break;
             bool active = (wactive >> bit) & 0x1;
             bool halted = (wstatus >> bit) & 0x1;
-            uint32_t pc = 0;
-            uint32_t hacause = 0;
-            if(active && halted && include_pc) {
+            uint32_t pc = 0xfafafafa;
+            uint32_t hacause = 0xfafafafa;
+            if(include_pc && (!active || halted)) {
                 select_warp_thread(wid, 0);     // Changes current selection
-                CHECK_ERR(dmreg_rd(DMReg_t::DPC, pc), "Failed to read DPC register for warp " + std::to_string(wid));
+                CHECK_ERR(get_warp_pc(pc), "Failed to read PC for warp " + std::to_string(wid));
             }
-            if(active && halted && include_hacause) {
+            if(include_hacause && (!active || halted)) {
                 select_warp_thread(wid, 0);     // Changes current selection
-                CHECK_ERR(dmreg_rdfield(DMReg_t::DCTRL, "hacause", hacause), "Failed to read DCTRL.hacause field for warp " + std::to_string(wid));
+                CHECK_ERR(get_warp_hacause(hacause), "Failed to read HACAUSE for warp " + std::to_string(wid));
             }
             warp_status[wid] = {wid, active, halted, pc, hacause};
         }
@@ -438,35 +469,15 @@ int Backend::get_warp_status(std::map<int, WarpStatus_t> &warp_status, bool incl
     return RCODE_OK;
 }
 
-int Backend::get_warp_summary(bool *allhalted, bool *anyhalted, bool *allrunning, bool *anyrunning, bool *allunavail, bool *anyunavail) {
+int Backend::get_warp_summary(WarpSummary_t &summary) {
     uint32_t dctrl = 0;
     CHECK_ERR(dmreg_rd(DMReg_t::DCTRL, dctrl), "Failed to read DCTRL register");
-    bool bit_allhalted = extract_dmreg_field(DMReg_t::DCTRL, "allhalted", dctrl) ? true : false;
-    bool bit_anyhalted = extract_dmreg_field(DMReg_t::DCTRL, "anyhalted", dctrl) ? true : false;
-    bool bit_allrunning = extract_dmreg_field(DMReg_t::DCTRL, "allrunning", dctrl) ? true : false;
-    bool bit_anyrunning = extract_dmreg_field(DMReg_t::DCTRL, "anyrunning", dctrl) ? true : false;
-    bool bit_allunavail = extract_dmreg_field(DMReg_t::DCTRL, "allunavail", dctrl) ? true : false;
-    bool bit_anyunavail = extract_dmreg_field(DMReg_t::DCTRL, "anyunavail", dctrl) ? true : false;
-
-    // return values
-    if(allhalted) {
-        *allhalted = bit_allhalted;
-    }
-    if(anyhalted) {
-        *anyhalted = bit_anyhalted;
-    }
-    if(allrunning) {
-        *allrunning = bit_allrunning;
-    }
-    if(anyrunning) {
-        *anyrunning = bit_anyrunning;
-    }
-    if(allunavail) {
-        *allunavail = bit_allunavail;
-    }
-    if(anyunavail) {
-        *anyunavail = bit_anyunavail;
-    }
+    summary.allhalted = extract_dmreg_field(DMReg_t::DCTRL, "allhalted", dctrl) ? true : false;
+    summary.anyhalted = extract_dmreg_field(DMReg_t::DCTRL, "anyhalted", dctrl) ? true : false;
+    summary.allrunning = extract_dmreg_field(DMReg_t::DCTRL, "allrunning", dctrl) ? true : false;
+    summary.anyrunning = extract_dmreg_field(DMReg_t::DCTRL, "anyrunning", dctrl) ? true : false;
+    summary.allunavail = extract_dmreg_field(DMReg_t::DCTRL, "allunavail", dctrl) ? true : false;
+    summary.anyunavail = extract_dmreg_field(DMReg_t::DCTRL, "anyunavail", dctrl) ? true : false;
     return RCODE_OK;
 }
 
@@ -491,6 +502,7 @@ int Backend::get_warp_state(int g_wid, bool &halted) {
 int Backend::get_warp_pc(uint32_t &pc) {
     CHECK_SELECTED();
     CHECK_ERR(dmreg_rd(DMReg_t::DPC, pc), "Failed to read DPC register");
+    state_.selected_warp_pc = pc;
     log_->debug(strfmt("Rd PC => 0x%08X", pc));
     return RCODE_OK;
 }
@@ -498,7 +510,15 @@ int Backend::get_warp_pc(uint32_t &pc) {
 int Backend::set_warp_pc(const uint32_t pc) {
     CHECK_SELECTED();
     CHECK_ERR(dmreg_wr(DMReg_t::DPC, pc), "Failed to write DPC register");
+    state_.selected_warp_pc = pc;
     log_->debug(strfmt("Wr PC <= 0x%08X", pc));
+    return RCODE_OK;
+}
+
+int Backend::get_warp_hacause(uint32_t &hacause) {
+    CHECK_SELECTED();
+    CHECK_ERR(dmreg_rdfield(DMReg_t::DCTRL, "hacause", hacause), "Failed to read HACAUSE register");
+    log_->debug(strfmt("Rd HACAUSE => 0x%08X", hacause));
     return RCODE_OK;
 }
 
@@ -602,9 +622,11 @@ int Backend::resume_warps() {
 
 int Backend::step_warp() {
     CHECK_SELECTED();
-    bool all_halted = false;
-    CHECK_ERR(get_warp_summary(&all_halted), "Failed to get warp summary before stepping");
-    if (all_halted) log_->warn("All warps are halted, Stepping a warp may cause deadlock.");
+    CHECK_HALTED();
+
+    WarpSummary_t wsummary;
+    CHECK_ERR(get_warp_summary(wsummary), "Failed to get warp summary before stepping");
+    if (wsummary.allhalted) log_->warn("All warps are halted, Stepping a warp may cause deadlock.");
 
     // Send step request
     CHECK_ERR(dmreg_wrfield(DMReg_t::DCTRL, "stepreq", 1), "Failed to send step request");
@@ -622,15 +644,8 @@ int Backend::step_warp() {
     return RCODE_OK;
 }
 
-int Backend::get_halt_cause(uint32_t &hacause) {
-    CHECK_SELECTED();
-    CHECK_ERR(dmreg_rdfield(DMReg_t::DCTRL, "cause", hacause), "Failed to read HACAUSE register");
-    log_->debug(strfmt("Rd HACAUSE => 0x%08X", hacause));
-    return RCODE_OK;
-}
-
 int Backend::inject_instruction(uint32_t instruction) {
-    CHECK_SELECTED();
+    // NOTE: Caller must make sure a warp/thread is selected and halted
 
     // Write instruction to DINJECT register
     CHECK_ERR(dmreg_wr(DMReg_t::DINJECT, instruction), 
@@ -664,6 +679,9 @@ int Backend::inject_instruction(const std::string &asm_instr) {
 // ----- Platform Query/Update Methods -----------------------------------------
 
 int Backend::read_gpr(const uint32_t regnum, uint32_t &value) {
+    CHECK_SELECTED();
+    CHECK_HALTED();
+
     // move arch reg to dscratch: REG[i] -csrw-> dscratch
     CHECK_ERR(inject_instruction(strfmt("csrw %d, x%d", RV_CSR_VX_DSCRATCH, regnum)), "Failed to move arch reg to dscratch");
     // read reg value from dscratch
@@ -673,6 +691,9 @@ int Backend::read_gpr(const uint32_t regnum, uint32_t &value) {
 }
 
 int Backend::write_gpr(const uint32_t regnum, const uint32_t value) {
+    CHECK_SELECTED();
+    CHECK_HALTED();
+
     // move value to dscratch: dbg(value) --> dscratch
     CHECK_ERR(dmreg_wr(DMReg_t::DSCRATCH, value), "Failed to write DSCRATCH register");
     // move dscratch to arch reg: dscratch -csrr-> REG[i]
@@ -683,6 +704,9 @@ int Backend::write_gpr(const uint32_t regnum, const uint32_t value) {
 
 // Get the CSR register value
 int Backend::read_csr(const uint32_t regaddr, uint32_t &value) {
+    CHECK_SELECTED();
+    CHECK_HALTED();
+
     // save t0: t0 -csrw-> dscratch --> dbg (t0_val)
     uint32_t t0_val = 0;
     CHECK_ERR(inject_instruction(strfmt("csrw %d, t0", RV_CSR_VX_DSCRATCH)), "Failed to save t0 to DSCRATCH");          // TODO: if any subsequent inject fails, fn returns without restoring t0 --> need RAII guard
@@ -701,6 +725,9 @@ int Backend::read_csr(const uint32_t regaddr, uint32_t &value) {
 
 // Set the CSR register value
 int Backend::write_csr(const uint32_t regaddr, const uint32_t value) {
+    CHECK_SELECTED();
+    CHECK_HALTED();
+
     // save t0: t0 -csrw-> dscratch --> dbg (t0_val)
     uint32_t t0_val = 0;
     CHECK_ERR(inject_instruction(strfmt("csrw %d, t0", RV_CSR_VX_DSCRATCH)), "Failed to save t0 to DSCRATCH");          // TODO: if any subsequent inject fails, fn returns without restoring t0 --> need RAII guard
@@ -787,6 +814,9 @@ int Backend::write_regs(const std::vector<std::string> &reg_names, const std::ve
 
 // Read memory
 int Backend::read_mem(const uint32_t addr, const uint32_t nbytes, std::vector<uint8_t> &data) {
+    CHECK_SELECTED();
+    CHECK_HALTED();
+
     if(nbytes == 0)
         return RCODE_OK;
 
@@ -850,6 +880,9 @@ int Backend::read_mem(const uint32_t addr, const uint32_t nbytes, std::vector<ui
 
 // Write memory
 int Backend::write_mem(const uint32_t addr, const std::vector<uint8_t> &data) {
+    CHECK_SELECTED();
+    CHECK_HALTED();
+
     size_t nbytes = data.size();   
     if (nbytes == 0)
         return RCODE_OK;
@@ -1024,11 +1057,42 @@ int Backend::any_breakpoints(bool &anybps) const {
     return RCODE_OK;
 }
 
-int Backend::continue_until_breakpoint() {
-    log_->info("Continuing execution until breakpoint is hit");
+int Backend::until_breakpoint(bool auto_select) {
+    while(true) {
+        // Check if any warp halted
+        WarpSummary_t wsummary;
+        CHECK_ERR(get_warp_summary(wsummary), "Failed to get warp summary during continue");
+        if (wsummary.anyhalted) {
+            log_->info("A warp has halted");
 
-    // Resume all warps
-    CHECK_ERR(resume_warps(), "Failed to resume warps");
+            std::map<int, WarpStatus_t> warp_status;
+            CHECK_ERR(get_warp_status(warp_status), "Failed to get warp status after halt");
+            
+            // Find warps halted due to breakpoint
+            std::vector<int> halted_wids;
+            for (const auto& [wid, wstatus] : warp_status) {
+                if (wstatus.halted && wstatus.hacause == 0x1) {  // halt caused by breakpoint
+                    halted_wids.push_back(wid);
+                    log_->info(strfmt("Warp %d halted due to breakpoint", wid));
+                }
+            }
+
+            if(halted_wids.empty()) {
+                log_->info("No warps halted due to breakpoint, continuing...");
+                // Resume all warps and continue polling
+                CHECK_ERR(resume_warps(), "Failed to resume warps during continue");
+                continue;
+            }
+
+            if (auto_select && !halted_wids.empty()) {
+                CHECK_ERR(select_warp_thread(halted_wids[0], 0), "Failed to select halted warp");
+                log_->info(strfmt("Automatically selected warp %d, thread 0", halted_wids[0]));
+            }
+            return RCODE_OK;
+        }
+        // Sleep for a short duration before polling again
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
 
     log_->warn("continue until breakpoint not supported yet");
     return RCODE_OK;
@@ -1039,7 +1103,7 @@ int Backend::continue_until_breakpoint() {
 // Helpers
 //==============================================================================
 
-void Backend::_print_platform_info() const {
+std::string Backend::_get_platform_info_str() const {
     std::string info;
     info += strfmt("  Platform ID   : 0x%08X\n", state_.platinfo.platform_id);
     info += strfmt("  Platform Name : %s\n", state_.platinfo.platform_name.c_str());
@@ -1051,8 +1115,7 @@ void Backend::_print_platform_info() const {
     info += strfmt("  Total Cores   : %u\n", state_.platinfo.num_total_cores);
     info += strfmt("  Total Warps   : %u\n", state_.platinfo.num_total_warps);
     info += strfmt("  Total Threads : %u\n", state_.platinfo.num_total_threads);
-    log_->info("Platform Information:\n" + info);
-    return;
+    return info;
 }
 
 //==============================================================================
