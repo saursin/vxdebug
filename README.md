@@ -149,6 +149,13 @@ Following are some of the commonly used commands.
 - Once started, launch GDB in another terminal and use the provided `gdbinit.cfg` to connect to vxdebug and initialize things (use: `riscv64-unknown-elf-gdb -x gdbinit.cfg`)
 - Once gdb is connected, it is recommended to load symbols using `file <path-to-elf-file>`. This helps gdb map PC values to lines in the C/C++ code and provide contextual information. 
 
+**Vortex specific GDB commands**
+```bash
+vx_thread <warpid> <threadid>   # select a warp/thread pair for debugging
+vx_warp <Warpid>                # Select a warp for debugging (tid=0)
+vx_info                         # Display info about currently selected thread
+```
+
 
 ## Helpful scripts
 We provide vxdebug and gdb scripts to aid in debugging.
