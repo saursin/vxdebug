@@ -1,4 +1,5 @@
 #include "gdbstub.h"
+#include "vxdebug.h"
 #include "backend.h"
 #include "logger.h"
 #include "tcputils.h"
@@ -91,7 +92,8 @@ std::string packetify(const std::string& msg) {
 }
 
 
-GDBStub::GDBStub(Backend* backend):
+GDBStub::GDBStub(VortexDebugger* vxdebug, Backend* backend):
+    vxdebug_(vxdebug),
     backend_(backend), 
     log_(new Logger("GDBStub", 4)),
     server_(new TCPServer()) 
@@ -124,6 +126,7 @@ GDBStub::GDBStub(Backend* backend):
     cmd_map_["qAttached"]       = &GDBStub::cmd_attached;
 
     cmd_map_["qXfer:features:read:target.xml:"] = &GDBStub::cmd_qxfer_features_read;
+    cmd_map_["qRcmd,"]          = &GDBStub::cmd_monitor;
     cmd_map_["vMustReplyEmpty"] = &GDBStub::cmd_notfound;
 
     // Build thread map
@@ -768,6 +771,30 @@ void GDBStub::cmd_qxfer_features_read(const std::string& cmdstr) {
 
     // Packet data = marker + chunk contents
     send_packet(std::string(1, marker) + chunk);
+}
+
+// cmd: qRcmd,cmdhex
+// desc: Monitor command from GDB
+// reply: command-specific response
+void GDBStub::cmd_monitor(const std::string& cmdstr) {
+    std::string args = cmdstr.substr(6); // skip "qRcmd,"
+    // Decode hex to ASCII
+    std::string monitor_cmd;
+    for (size_t i = 0; i < args.length(); i += 2) {
+        std::string byte_str = args.substr(i, 2);
+        char byte = static_cast<char>(strtoul(byte_str.c_str(), nullptr, 16));
+        monitor_cmd += byte;
+    }
+
+    log_->info("Got monitor command: " + monitor_cmd);
+    int rc = vxdebug_->__execute_line(monitor_cmd);
+
+    std::string response = strfmt("Monitor cmd executed with rc=%d\n", rc);
+    std::string hex_response;
+    for (char c : response) {
+        hex_response += strfmt("%02x", static_cast<uint8_t>(c));
+    }
+    send_packet(hex_response);
 }
 
 

@@ -19,6 +19,7 @@ public:
     int execute_command(const std::string &cmd, const std::vector<std::string>& args);
     int execute_script(const std::string &script);
     int start_cli();
+    int __execute_line(const std::string &raw_input);
     VxDbgState_t get_state() const { return running_; }
 
     // command handlers
@@ -51,7 +52,6 @@ private:
                          const std::string& description,
                          CommandHandler_t handler);
 
-    int __execute_line(const std::string &raw_input);
     
     // prompt generation
     std::string get_prompt() const;

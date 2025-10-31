@@ -855,7 +855,7 @@ int VortexDebugger::cmd_gdbserver(const std::vector<std::string>& args) {
     int port = parser.get<int>("port");
     
     // Start GDB server
-    GDBStub gdbstub(backend_);
+    GDBStub gdbstub(this, backend_);
     rc = gdbstub.serve_forever(port);
     if (rc != RCODE_OK) {
         log_->error("Failed to start GDB server on port " + std::to_string(port));
