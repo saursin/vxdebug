@@ -175,6 +175,11 @@ int Backend::initialize(bool quiet) {
     CHECK_TRANSPORT();
     log_->info("Initializing backend...");
 
+    // if (reset) {
+    //     log_->debug("Resetting target platform as part of initialization");
+    //     CHECK_ERR(reset_platform(), "Failed to reset platform during initialization");
+    // }
+
     // Try to Wake DM
     log_->debug("Querying debug module status");
     CHECK_ERR(wake_dm(), "Failed to wake DM");
@@ -197,6 +202,13 @@ int Backend::initialize(bool quiet) {
     return RCODE_OK;
 }
 
+int Backend::start_execution() {
+    CHECK_TRANSPORT();
+    log_->info("Starting execution on target...");
+    transport_->_send_buf("s\n");
+    CHECK_ERR(initialize(false), "Failed to initialize backend after starting execution");
+    return RCODE_OK;
+}
 
 //==============================================================================
 // API Methods

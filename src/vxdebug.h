@@ -25,6 +25,7 @@ public:
     // command handlers
     int cmd_help(const std::vector<std::string>& args);
     int cmd_exit(const std::vector<std::string>& args);
+    int cmd_run(const std::vector<std::string>& args);
     int cmd_source(const std::vector<std::string>& args);
     int cmd_transport(const std::vector<std::string>& args);
     int cmd_reset(const std::vector<std::string>& args);

@@ -72,6 +72,9 @@ public:
     // Initialization
     int initialize(bool quiet=false);
 
+    // Start execution
+    int start_execution();
+
     //==========================================================================
     // API Methods
     //==========================================================================

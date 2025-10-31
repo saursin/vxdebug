@@ -43,6 +43,7 @@ VortexDebugger::VortexDebugger():
     // Register commands using the helper function
     register_command("help",      {"h"},         "Show this help message", &VortexDebugger::cmd_help);
     register_command("exit",      {"quit", "q"}, "Exit the debugger", &VortexDebugger::cmd_exit);
+    register_command("run",       {"r"},         "Run the target program", &VortexDebugger::cmd_run);
     register_command("transport", {"t"},         "Set backend transport", &VortexDebugger::cmd_transport);
     register_command("source",    {"src"},       "Execute commands from a script file", &VortexDebugger::cmd_source);
     register_command("reset",     {"R"},         "Reset the target system", &VortexDebugger::cmd_reset);
@@ -312,6 +313,24 @@ int VortexDebugger::cmd_exit(const std::vector<std::string>& args) {
     return 0;
 }
 
+int VortexDebugger::cmd_run(const std::vector<std::string>& args) {
+    ArgParse::ArgumentParser parser("run", "Run the target program");
+    // parser.add_argument({"-r", "--reset"}, "Reset target before running", ArgParse::BOOL, "false");
+    int rc = parser.parse_args(args);
+    if (rc != 0) {return rc;}
+
+    // bool reset = parser.get<bool>("reset");
+
+    log_->info("Running target program");
+    rc = backend_->start_execution();
+    if (rc != RCODE_OK) {
+        log_->error("Failed to start target execution");
+        return rc;
+    }
+    // running_ = RUNNING;   // TODO: do we need this?
+    return RCODE_OK;
+}
+
 int VortexDebugger::cmd_source(const std::vector<std::string>& args) {
     ArgParse::ArgumentParser parser("source", "Execute commands from a script file");
     parser.add_argument({"script_file"}, "Path to script file", ArgParse::STR, "", true);
@@ -353,9 +372,6 @@ int VortexDebugger::cmd_transport(const std::vector<std::string>& args) {
         if (rc != RCODE_OK) return rc;
         rc = backend_->transport_connect({{"ip", ip}, {"port", std::to_string(port)}});
         if (rc != RCODE_OK) return rc;
-        rc = backend_->initialize();
-        if (rc != RCODE_OK) return rc;
-
     } else {
         log_->error("No transport type specified, see 'help transport' for usage.");
         return 1;
