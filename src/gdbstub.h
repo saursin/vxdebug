@@ -1,12 +1,15 @@
 #pragma once
 #include <string>
 #include <unordered_map>
+#include <map>
 
 // Forward declarations
 class GDBStub;
 class Backend;
 class Logger;
 class TCPServer;
+
+#define MAX_THREADS_PER_REPLY 64
 
 // fn pointer
 typedef void (GDBStub::*cmd_handler_t)(const std::string&);
@@ -40,9 +43,18 @@ private:
     void cmd_insert_bp(const std::string& cmdstr);
     void cmd_remove_bp(const std::string& cmdstr);
     // void cmd_kill(const std::string& cmdstr);
-    // void cmd_thread_select(const std::string& cmdstr);
+    
     // void cmd_vcont_query(const std::string& cmdstr);
     // void cmd_target_xml(const std::string& cmdstr);
+
+    void cmd_thread_list_first(const std::string& cmdstr);
+    void cmd_thread_list_next(const std::string& cmdstr);
+    void cmd_thread_info(const std::string& cmdstr);
+    void cmd_curr_thread(const std::string& cmdstr);
+    void cmd_thread_select(const std::string& cmdstr);
+    void cmd_thread_alive(const std::string& cmdstr);
+
+    void cmd_qxfer_features_read(const std::string& cmdstr);
     void cmd_notfound(const std::string& cmdstr);
 
     // Internal state
@@ -53,5 +65,6 @@ private:
     std::unordered_map<std::string, cmd_handler_t> cmd_map_;
     bool is_attached_ = false;
 
-    std::unordered_map<int, std::pair<int, int>> thread_map_; // tid -> (g_wid, l_tid)
+    std::map<int, std::pair<int, int>> thread_map_; // tid -> (g_wid, l_tid)
+    size_t thread_enum_cursor_ = 0;
 };

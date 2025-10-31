@@ -678,11 +678,16 @@ int VortexDebugger::cmd_inject(const std::vector<std::string>& args) {
     }
 
     // check if current warp is halted
+    bool is_active;
     bool is_halted;
-    CHECK_ERRS(backend_->get_warp_state(backend_->state_.selected_wid, is_halted));
+    CHECK_ERRS(backend_->get_warp_state(backend_->state_.selected_wid, is_active, is_halted));
+    if (!is_active) {
+        log_->error("Cannot inject instruction: selected warp is not active");
+        return RCODE_WARP_NOT_ACTIVE;
+    }
     if (!is_halted) {
         log_->error("Cannot inject instruction: selected warp is not halted");
-        return 1;
+        return RCODE_WARP_NOT_HALTED;
     }
 
     // Get instruction to inject

@@ -86,6 +86,7 @@ enum RV_CSR: uint32_t {
     RV_CSR_MIMPID            = 0xf13,
 
     // Vortex-specific CSRs
+    RV_CSR_VX_THREAD_ID      = 0xcc0,
     RV_CSR_VX_WARP_ID        = 0xcc1,
     RV_CSR_VX_CORE_ID        = 0xcc2,
     RV_CSR_VX_ACTIVE_WARPS   = 0xcc3,

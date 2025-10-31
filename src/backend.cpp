@@ -51,7 +51,12 @@
 #define CHECK_HALTED() \
     do { \
         bool is_halted = false; \
-        CHECK_ERR(get_warp_state(state_.selected_wid, is_halted), "Failed to get selected warp state"); \
+        bool is_active = false; \
+        CHECK_ERR(get_warp_state(state_.selected_wid, is_active, is_halted), "Failed to get selected warp state"); \
+        if (!is_active) { \
+            log_->error("Selected warp is not active"); \
+            return RCODE_WARP_NOT_ACTIVE; \
+        } \
         if (!is_halted) { \
             log_->error("Selected warp is not halted"); \
             return RCODE_WARP_NOT_HALTED; \
@@ -314,9 +319,13 @@ int Backend::fetch_platform_info() {
     CHECK_ERR(select_warp_thread(0, 0), "Failed to select warp 0, thread 0");
 
     // check if warp 0 is halted
+    bool w0_is_active = false;
     bool w0_is_halted = false;
-    CHECK_ERR(get_warp_state(0, w0_is_halted), "Failed to get warp state");
-
+    CHECK_ERR(get_warp_state(0, w0_is_active, w0_is_halted), "Failed to get warp state");
+    if (!w0_is_active) {
+        log_->error("Warp 0 is not active, cannot fetch ISA information");
+        return RCODE_WARP_NOT_ACTIVE;
+    }
     if(!w0_is_halted) {
         // halt warp 0
         CHECK_ERR(halt_warps({0}), "Failed to halt warp 0");
@@ -481,7 +490,7 @@ int Backend::get_warp_summary(WarpSummary_t &summary) {
     return RCODE_OK;
 }
 
-int Backend::get_warp_state(int g_wid, bool &halted) {
+int Backend::get_warp_state(int g_wid, bool &active, bool &halted) {
     if (g_wid < 0 || g_wid >= static_cast<int>(state_.platinfo.num_total_warps)) {
         log_->error("Invalid global warp ID " + std::to_string(g_wid));
         return RCODE_INVALID_ARG;
@@ -490,10 +499,14 @@ int Backend::get_warp_state(int g_wid, bool &halted) {
     int win_idx = g_wid / 32;
     CHECK_ERR(dmreg_wrfield(DMReg_t::DSELECT, "winsel", win_idx), "Failed to write DSELECT.winsel field");
 
+    uint32_t wactive = 0;
+    CHECK_ERR(dmreg_rd(DMReg_t::WACTIVE, wactive), "Failed to read WACTIVE register");
+
     uint32_t wstatus = 0;
     CHECK_ERR(dmreg_rd(DMReg_t::WSTATUS, wstatus), "Failed to read WSTATUS register");
     int bit_pos = g_wid % 32;
 
+    active = ((wactive >> bit_pos) & 0x1) ? true : false;
     halted = ((wstatus >> bit_pos) & 0x1) ? true : false;
     return RCODE_OK;
 }
@@ -536,8 +549,14 @@ int Backend::halt_warps(const std::vector<int> &wids) {
        
     bool ok = true;
     for (int wid : wids) {
+        bool warp_is_active = false;
         bool warp_is_halted = false;
-        CHECK_ERR(get_warp_state(wid, warp_is_halted), "Failed to get warp state after halt request");
+        CHECK_ERR(get_warp_state(wid, warp_is_active, warp_is_halted), "Failed to get warp state after halt request");
+        if (!warp_is_active) {
+            log_->warn("Warp " + std::to_string(wid) + " not active after halt request");
+            ok = false;
+            continue;
+        }
         if (!warp_is_halted) {
             log_->warn("Warp " + std::to_string(wid) + " not halted after halt request");
             ok = false;
@@ -588,8 +607,14 @@ int Backend::resume_warps(const std::vector<int> &wids) {
 
     bool ok = true;
     for (int wid : wids) {
+        bool warp_is_active = false;
         bool warp_is_halted = false;
-        CHECK_ERR(get_warp_state(wid, warp_is_halted), "Failed to get warp state after resume request");
+        CHECK_ERR(get_warp_state(wid, warp_is_active, warp_is_halted), "Failed to get warp state after resume request");
+        if (!warp_is_active) {
+            log_->warn("Warp " + std::to_string(wid) + " not active after resume request");
+            ok = false;
+            continue;
+        }
         if (warp_is_halted) {
             log_->warn("Warp " + std::to_string(wid) + " not resumed after resume request");
             ok = false;
@@ -679,6 +704,7 @@ int Backend::inject_instruction(const std::string &asm_instr) {
 // ----- Platform Query/Update Methods -----------------------------------------
 
 int Backend::read_gpr(const uint32_t regnum, uint32_t &value) {
+    value = 0xfafafafa;
     CHECK_SELECTED();
     CHECK_HALTED();
 

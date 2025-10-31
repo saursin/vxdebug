@@ -15,6 +15,7 @@
 #define RCODE_TRANSPORT_ERR     -7
 #define RCODE_NONESELECTED_ERR  -8
 #define RCODE_WARP_NOT_HALTED   -9
+#define RCODE_WARP_NOT_ACTIVE   -10
 
 const std::map<int, std::string> RCODE_STR_MAP = {
     {RCODE_OK,                 "OK"},
@@ -26,7 +27,8 @@ const std::map<int, std::string> RCODE_STR_MAP = {
     {RCODE_COMM_ERR,           "COMMUNICATION_ERROR"},
     {RCODE_TRANSPORT_ERR,      "TRANSPORT_ERROR"},
     {RCODE_NONESELECTED_ERR,   "NONE_SELECTED_ERROR"},
-    {RCODE_WARP_NOT_HALTED,    "WARP_NOT_HALTED_ERROR"}
+    {RCODE_WARP_NOT_HALTED,    "WARP_NOT_HALTED_ERROR"},
+    {RCODE_WARP_NOT_ACTIVE,    "WARP_NOT_ACTIVE_ERROR"}
 };
 
 std::string rcode_str(int code);

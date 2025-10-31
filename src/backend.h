@@ -111,8 +111,8 @@ public:
     // Check if all/any warps are halted/running
     int get_warp_summary(WarpSummary_t &summary);
 
-    // Get halted state of a specific warp
-    int get_warp_state(int wid, bool &halted);
+    // Get active/halted state of a specific warp
+    int get_warp_state(int wid, bool &active, bool &halted);
 
     // Read program counter of selected warp/thread
     int get_warp_pc(uint32_t &pc);

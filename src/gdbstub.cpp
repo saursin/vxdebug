@@ -3,10 +3,80 @@
 #include "logger.h"
 #include "tcputils.h"
 #include "util.h"
+#include "riscv.h"
 
 #include <algorithm>
 
 #define RECV_BUFSZ 4096
+
+static const std::string target_xml = 
+R"XML(<?xml version="1.0"?>
+    <!DOCTYPE target SYSTEM "gdb-target.dtd">
+    <target>
+        <architecture>riscv:rv32</architecture>
+        <feature name="org.gnu.gdb.riscv.cpu">
+            <reg name="x0" bitsize="32" type="int" group="general"/>
+            <reg name="x1" bitsize="32" type="int" group="general"/>
+            <reg name="x2" bitsize="32" type="int" group="general"/>
+            <reg name="x3" bitsize="32" type="int" group="general"/>
+            <reg name="x4" bitsize="32" type="int" group="general"/>
+            <reg name="x5" bitsize="32" type="int" group="general"/>
+            <reg name="x6" bitsize="32" type="int" group="general"/>
+            <reg name="x7" bitsize="32" type="int" group="general"/>
+            <reg name="x8" bitsize="32" type="int" group="general"/>
+            <reg name="x9" bitsize="32" type="int" group="general"/>
+            <reg name="x10" bitsize="32" type="int" group="general"/>
+            <reg name="x11" bitsize="32" type="int" group="general"/>
+            <reg name="x12" bitsize="32" type="int" group="general"/>
+            <reg name="x13" bitsize="32" type="int" group="general"/>
+            <reg name="x14" bitsize="32" type="int" group="general"/>
+            <reg name="x15" bitsize="32" type="int" group="general"/>
+            <reg name="x16" bitsize="32" type="int" group="general"/>
+            <reg name="x17" bitsize="32" type="int" group="general"/>
+            <reg name="x18" bitsize="32" type="int" group="general"/>
+            <reg name="x19" bitsize="32" type="int" group="general"/>
+            <reg name="x20" bitsize="32" type="int" group="general"/>
+            <reg name="x21" bitsize="32" type="int" group="general"/>
+            <reg name="x22" bitsize="32" type="int" group="general"/>
+            <reg name="x23" bitsize="32" type="int" group="general"/>
+            <reg name="x24" bitsize="32" type="int" group="general"/>
+            <reg name="x25" bitsize="32" type="int" group="general"/>
+            <reg name="x26" bitsize="32" type="int" group="general"/>
+            <reg name="x27" bitsize="32" type="int" group="general"/>
+            <reg name="x28" bitsize="32" type="int" group="general"/>
+            <reg name="x29" bitsize="32" type="int" group="general"/>
+            <reg name="x30" bitsize="32" type="int" group="general"/>
+            <reg name="x31" bitsize="32" type="int" group="general"/>
+            <reg name="pc" bitsize="32" type="code_ptr" group="general"/>
+        </feature>
+        <feature name="org.vortex.debug.csr">
+            <reg name="vx_num_cores" bitsize="32" type="int" group="vortex"/>
+            <reg name="vx_num_warps" bitsize="32" type="int" group="vortex"/>
+            <reg name="vx_num_threads" bitsize="32" type="int" group="vortex"/>
+            <reg name="vx_core_id" bitsize="32" type="int" group="vortex"/>
+            <reg name="vx_warp_id" bitsize="32" type="int" group="vortex"/>
+            <reg name="vx_thread_id" bitsize="32" type="int" group="vortex"/>
+            <reg name="vx_active_warps" bitsize="32" type="int" group="vortex"/>
+            <reg name="vx_active_threads" bitsize="32" type="int" group="vortex"/>
+            <reg name="vx_local_mem_base" bitsize="32" type="int" group="vortex"/>
+        </feature>
+    </target>
+)XML";
+
+
+// Exposed CSRs
+constexpr RV_CSR CSR_LIST[] = {
+    RV_CSR_VX_NUM_CORES,
+    RV_CSR_VX_NUM_WARPS,
+    RV_CSR_VX_NUM_THREADS,
+    RV_CSR_VX_CORE_ID,
+    RV_CSR_VX_WARP_ID,
+    RV_CSR_VX_THREAD_ID,
+    RV_CSR_VX_ACTIVE_WARPS,
+    RV_CSR_VX_ACTIVE_THREADS,
+    RV_CSR_VX_LOCAL_MEM_BASE
+};
+
 
 // Helpers for packet handling
 std::string checksum_str(const std::string& msg) {
@@ -37,24 +107,40 @@ GDBStub::GDBStub(Backend* backend):
     cmd_map_["M"]               = &GDBStub::cmd_write_mem;
     cmd_map_["c"]               = &GDBStub::cmd_continue;
     cmd_map_["s"]               = &GDBStub::cmd_step;
-    // cmd_map_["Z"]               = &GDBStub::cmd_insert_bp;
-    // cmd_map_["z"]               = &GDBStub::cmd_remove_bp;
+    cmd_map_["Z"]               = &GDBStub::cmd_insert_bp;
+    cmd_map_["z"]               = &GDBStub::cmd_remove_bp;
     // cmd_map_["k"]               = &GDBStub::cmd_kill;
-    // cmd_map_["Hc"]              = &GDBStub::cmd_thread_select;
-    // cmd_map_["Hg"]              = &GDBStub::cmd_thread_select;
     // cmd_map_["vCont?"]          = &GDBStub::cmd_vcont_query;
+
+    // thread related commands
+    cmd_map_["qfThreadInfo"]    = &GDBStub::cmd_thread_list_first;
+    cmd_map_["qsThreadInfo"]    = &GDBStub::cmd_thread_list_next;
+    cmd_map_["qThreadExtraInfo"] = &GDBStub::cmd_thread_info;
+    cmd_map_["Hc"]              = &GDBStub::cmd_thread_select;  // Select thread for step/continue
+    cmd_map_["Hg"]              = &GDBStub::cmd_thread_select;  // Select thread for general ops (mem/reg)
+    cmd_map_["T"]               = &GDBStub::cmd_thread_alive;
+
     cmd_map_["qSupported"]      = &GDBStub::cmd_supported;
     cmd_map_["qAttached"]       = &GDBStub::cmd_attached;
+
+    cmd_map_["qXfer:features:read:target.xml:"] = &GDBStub::cmd_qxfer_features_read;
     cmd_map_["vMustReplyEmpty"] = &GDBStub::cmd_notfound;
 
     // Build thread map
     for(int wid=0; wid < backend_->get_num_warps(); ++wid) {
         int num_threads = backend_->get_num_threads_per_warp();
         for(int l_tid=0; l_tid < num_threads; ++l_tid) {
-            int global_tid = wid * num_threads + l_tid;
+            int global_tid = 1 + wid * num_threads + l_tid;
             thread_map_[global_tid] = std::make_pair(wid, l_tid);
         }
     }
+
+    // Print thread map info
+    std::string thread_map_info = "Thread Map (total threads: " + std::to_string(thread_map_.size()) + "):";
+    for (const auto& [tid, wid_ltid] : thread_map_) {
+        thread_map_info += strfmt(" tid %3d -> (wid:%3d, tid:%3d)\n", tid, wid_ltid.first, wid_ltid.second);
+    }
+    log_->debug(thread_map_info);
 }
 
 GDBStub::~GDBStub() {
@@ -216,7 +302,8 @@ void GDBStub::send_ack() {
 void GDBStub::cmd_supported(const std::string& cmdstr) {
     std::string args = cmdstr.substr(11); // skip "qSupported:"
     std::vector<std::string> features = tokenize(args, ';');
-    std::string reply = "PacketSize=4096;";
+    std::string reply = "PacketSize=4096;"; // set max packet size
+    reply += "qXfer:features:read+;"; // support feature read
     // Advertise software breakpoint support
     if(std::find(features.begin(), features.end(), "swbreak+") != features.end()) {
         reply += "swbreak+;";
@@ -253,15 +340,6 @@ void GDBStub::cmd_detach(const std::string& cmdstr) {
     send_packet("OK");
 }
 
-// cmd: notfound
-// desc: Default handler for unimplemented commands
-void GDBStub::cmd_notfound(const std::string& cmdstr) {
-    if (cmdstr != "vMustReplyEmpty") {
-        log_->warn("Received unknown command: " + cmdstr + ", Skipping...");
-    }    
-    send_packet("");
-}
-
 // cmd: g 
 // Read general registers
 // reply: xxx... (concatenated register values, target dependent format)
@@ -277,6 +355,12 @@ void GDBStub::cmd_read_regs(const std::string& cmdstr) {
     uint32_t pc;
     backend_->get_warp_pc(pc);
     reply += strfmt("%08x", swap_endianess32(pc));
+
+    uint32_t val;
+    for (RV_CSR csr : CSR_LIST) {
+        backend_->read_csr(csr, val);
+        reply += strfmt("%08x", swap_endianess32(val));
+    }
     send_packet(reply);
 }
 
@@ -310,6 +394,10 @@ void GDBStub::cmd_read_reg(const std::string& cmdstr) {
     else if (reg_idx == 32) { // PC
         backend_->get_warp_pc(regval);
     }
+    else if (reg_idx >= 33 && reg_idx < 33 + std::size(CSR_LIST)) {
+        RV_CSR csr = CSR_LIST[reg_idx - 33];
+        backend_->read_csr(csr, regval);
+    }
     else {
         log_->error("Invalid register index: " + args);
         send_packet("E02");
@@ -342,6 +430,10 @@ void GDBStub::cmd_write_reg(const std::string& cmdstr) {
     } 
     else if (reg_idx == 32) { // PC
         rc = backend_->set_warp_pc(regval);
+    }
+    else if (reg_idx >= 33 && reg_idx < 33 + std::size(CSR_LIST)) {
+        // Exposed CSRs -> read only
+        rc = RCODE_ERROR;
     }
     else {
         log_->error("Invalid register index: " + reg_idx_str);
@@ -470,4 +562,220 @@ void GDBStub::cmd_step(const std::string& cmdstr) {
 
     // After step, report halt with SIGTRAP
     send_packet("S05");
+}
+
+// cmd: Z type,addr,kind
+// desc: Insert breakpoint/watchpoint
+// reply: OK if successful
+void GDBStub::cmd_insert_bp(const std::string& cmdstr) {
+    std::string args = cmdstr.substr(1); // skip "Z"
+    size_t first_comma = args.find(',');
+    size_t second_comma = args.find(',', first_comma + 1);
+    if (first_comma == std::string::npos || second_comma == std::string::npos) {
+        log_->error("Invalid insert breakpoint command: " + cmdstr);
+        send_packet("E01");
+        return;
+    }
+    std::string type_str = args.substr(0, first_comma);
+    std::string addr_str = args.substr(first_comma + 1, second_comma - first_comma - 1);
+    // std::string kind_str = args.substr(second_comma + 1); // unused for now
+
+    uint32_t type = static_cast<uint32_t>(strtoul(type_str.c_str(), nullptr, 10));
+    uint32_t addr = static_cast<uint32_t>(strtoul(addr_str.c_str(), nullptr, 16));
+
+    if(type == 0 || type == 1) {
+        int rc = backend_->set_breakpoint(addr);
+        send_packet(rc == RCODE_OK ? "OK" : "E03");
+    } 
+    else {
+        log_->error("Unsupported breakpoint type: " + type_str);
+        send_packet("E02");
+        return;
+    }
+}
+
+// cmd: z type,addr,kind
+// desc: Remove breakpoint/watchpoint
+// reply: OK if successful
+void GDBStub::cmd_remove_bp(const std::string& cmdstr) {
+    std::string args = cmdstr.substr(1); // skip "z"
+    size_t first_comma = args.find(',');
+    size_t second_comma = args.find(',', first_comma + 1);
+    if (first_comma == std::string::npos || second_comma == std::string::npos) {
+        log_->error("Invalid remove breakpoint command: " + cmdstr);
+        send_packet("E01");
+        return;
+    }
+    std::string type_str = args.substr(0, first_comma);
+    std::string addr_str = args.substr(first_comma + 1, second_comma - first_comma - 1);
+    // std::string kind_str = args.substr(second_comma + 1); // unused for now
+
+    uint32_t type = static_cast<uint32_t>(strtoul(type_str.c_str(), nullptr, 10));
+    uint32_t addr = static_cast<uint32_t>(strtoul(addr_str.c_str(), nullptr, 16));
+
+    if(type == 0 || type == 1) {
+        int rc = backend_->remove_breakpoint(addr);
+        send_packet(rc == RCODE_OK ? "OK" : "E03");
+    } 
+    else {
+        log_->error("Unsupported breakpoint type: " + type_str);
+        send_packet("E02");
+        return;
+    }
+}
+
+// cmd: qfThreadInfo
+// desc: Request first batch of thread IDs
+// reply: m[tid1,tid2,...] or l
+void GDBStub::cmd_thread_list_first(const std::string& cmdstr) {
+    (void)cmdstr;
+    // Reset cursor
+    thread_enum_cursor_ = 0;
+    cmd_thread_list_next("");
+}
+
+// cmd: qsThreadInfo
+// desc: Request next batch of thread IDs
+// reply: m[tid1,tid2,...] or l
+void GDBStub::cmd_thread_list_next(const std::string& cmdstr) {
+    (void)cmdstr;   
+    if (thread_enum_cursor_ >= thread_map_.size()) {
+        send_packet("l"); // no more threads
+        return;
+    }
+
+    std::string reply = "m";
+    size_t count = 0;
+    for (; thread_enum_cursor_ < thread_map_.size() && count < MAX_THREADS_PER_REPLY; ++thread_enum_cursor_, ++count) {
+        int gtid = std::next(thread_map_.begin(), thread_enum_cursor_)->first;
+        reply += strfmt("%x,", gtid);
+    }
+
+    // Remove trailing comma
+    if (reply.back() == ',') {
+        reply.pop_back();
+    }
+    send_packet(reply);
+}
+
+// cmd: qThreadExtraInfo,tid
+// desc: Request extra info (like name) for a thread
+// reply: string (null-terminated)
+void GDBStub::cmd_thread_info(const std::string& cmdstr) {
+    std::string args = cmdstr.substr(17); // skip "qThreadExtraInfo,"
+    uint32_t tid = static_cast<uint32_t>(strtoul(args.c_str(), nullptr, 16));
+    auto it = thread_map_.find(tid);
+    if (it == thread_map_.end()) {
+        log_->error("Invalid thread ID in thread info command: " + args);
+        send_packet("");
+        return;
+    }
+    // Send the thread info (name, etc.)
+    uint32_t g_wid = it->second.first;
+    uint32_t l_tid = it->second.second;
+    bool active, halted;
+    backend_->get_warp_state(g_wid, active, halted);
+
+    std::string thread_info = strfmt("g_wid:%d,tid:%d,status: %s-%s", 
+        g_wid, l_tid, active ? "active" : "inactive", halted ? "halted" : "unhalted");
+
+    std::string hex_thread_info;
+    for (char c : thread_info) {
+        hex_thread_info += strfmt("%02x", static_cast<uint8_t>(c));
+    }
+    send_packet(hex_thread_info);
+}
+
+// cmd: qC
+// desc: Request current thread ID
+// reply: QCtid
+void GDBStub::cmd_curr_thread(const std::string& cmdstr) {
+    (void)cmdstr;   
+    int selected_wid, selected_tid;
+    backend_->get_selected_warp_thread(selected_wid, selected_tid, true);
+    int gtid = selected_wid * backend_->get_num_threads_per_warp() + selected_tid;
+    send_packet(strfmt("QC%x", gtid));
+}
+
+// cmd: Hc tid or Hg tid
+// desc: Select a thread
+// reply: OK if successful
+void GDBStub::cmd_thread_select(const std::string& cmdstr) {
+    std::string args = cmdstr.substr(2); // skip "Hc" or "Hg"
+    uint32_t tid = static_cast<uint32_t>(strtoul(args.c_str(), nullptr, 16));
+    auto it = thread_map_.find(tid);
+    if (it == thread_map_.end()) {
+        log_->error("Invalid thread ID in thread select command: " + args);
+        send_packet("E01");
+        return;
+    }
+    uint32_t g_wid = it->second.first;
+    uint32_t l_tid = it->second.second;
+    int rc = backend_->select_warp_thread(g_wid, l_tid);
+    send_packet(rc == RCODE_OK ? "OK" : "E02");
+}
+
+// cmd: T tid
+// desc: Check if a thread is alive
+// reply: OK if alive, E01 if not
+void GDBStub::cmd_thread_alive(const std::string& cmdstr) {
+    std::string args = cmdstr.substr(1); // skip "T"
+    uint32_t tid = static_cast<uint32_t>(strtoul(args.c_str(), nullptr, 16));
+    auto it = thread_map_.find(tid);
+    if (it == thread_map_.end()) {
+        log_->error("Invalid thread ID in thread alive command: " + args);
+        send_packet("E01");
+        return;
+    }
+    bool is_active, is_halted;
+    uint32_t g_wid = it->second.first;
+    backend_->get_warp_state(g_wid, is_active, is_halted);
+    if(is_active) {
+        send_packet("OK");
+    } else {
+        send_packet("E01");
+    }
+}
+
+// cmd: qXfer:features:read:target.xml:offset,length
+// desc: Serve the target.xml contents to GDB
+void GDBStub::cmd_qxfer_features_read(const std::string& cmdstr) {
+    const std::string prefix = "qXfer:features:read:target.xml:";
+    if (cmdstr.rfind(prefix, 0) != 0) {
+        send_packet("E00");  // not recognized
+        return;
+    }
+
+    // Find the offset and length part: e.g., "0,1000"
+    std::string range = cmdstr.substr(prefix.size());
+    size_t comma = range.find(',');
+    if (comma == std::string::npos) {
+        send_packet("E01");
+        return;
+    }
+
+    uint32_t offset = strtoul(range.substr(0, comma).c_str(), nullptr, 16);
+    uint32_t length = strtoul(range.substr(comma + 1).c_str(), nullptr, 16);
+
+    if (offset >= target_xml.size()) {
+        // 'l' means "last" chunk (nothing more to send)
+        send_packet("l");
+        return;
+    }
+
+    std::string chunk = target_xml.substr(offset, length);
+    char marker = (offset + chunk.size() < target_xml.size()) ? 'm' : 'l';
+
+    // Packet data = marker + chunk contents
+    send_packet(std::string(1, marker) + chunk);
+}
+
+
+// cmd: notfound
+// desc: Default handler for unimplemented commands
+void GDBStub::cmd_notfound(const std::string& cmdstr) {
+    if (cmdstr != "vMustReplyEmpty") {
+        log_->warn("Received unknown command: " + cmdstr + ", Skipping...");
+    }    
+    send_packet("");
 }
