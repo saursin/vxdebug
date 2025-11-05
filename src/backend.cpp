@@ -141,7 +141,13 @@ int Backend::transport_connect(const std::map<std::string, std::string> &args) {
     }
 
     if (transport_type_ == "tcp") {
+        log_->debug("Connecting TCP transport");
         CHECK_ERR(transport_->connect(args), "Failed to connect TCP transport");
+        log_->debug("Performing transport handshake");
+        CHECK_ERR(transport_->handshake(), "Transport handshake failed");
+        log_->debug("Sending start execution cmd");
+        std::string resp;
+        CHECK_ERR(transport_->send_cmd("s", resp), "Failed to send start execution command");
         log_->info("Transport connected!");
     } else {
         log_->error("Transport type not supported for connection: " + transport_type_);
@@ -175,11 +181,6 @@ int Backend::initialize(bool quiet) {
     CHECK_TRANSPORT();
     log_->info("Initializing backend...");
 
-    // if (reset) {
-    //     log_->debug("Resetting target platform as part of initialization");
-    //     CHECK_ERR(reset_platform(), "Failed to reset platform during initialization");
-    // }
-
     // Try to Wake DM
     log_->debug("Querying debug module status");
     CHECK_ERR(wake_dm(), "Failed to wake DM");
@@ -187,7 +188,7 @@ int Backend::initialize(bool quiet) {
     // Setup DM
     log_->debug("Setting up debug module");
     CHECK_ERR(setup_dm(), "Failed to set up DM");
-   
+
     // Get platform info
     log_->debug("Fetching platform information...");
     CHECK_ERR(fetch_platform_info(), "Failed to fetch platform info");
@@ -202,13 +203,6 @@ int Backend::initialize(bool quiet) {
     return RCODE_OK;
 }
 
-int Backend::start_execution() {
-    CHECK_TRANSPORT();
-    log_->info("Starting execution on target...");
-    transport_->_send_buf("s\n");
-    CHECK_ERR(initialize(false), "Failed to initialize backend after starting execution");
-    return RCODE_OK;
-}
 
 //==============================================================================
 // API Methods
@@ -305,6 +299,7 @@ int Backend::reset_platform(bool halt_warps) {
 
 int Backend::fetch_platform_info() {
     uint32_t platform = 0;
+    log_->debug("Reading PLATFORM register to determine hardware parameters");
     CHECK_ERR(dmreg_rd(DMReg_t::PLATFORM, platform), "Failed to read PLATFORM register");
     
     state_.platinfo.platform_id     = extract_dmreg_field(DMReg_t::PLATFORM, "platformid", platform);
@@ -316,6 +311,14 @@ int Backend::fetch_platform_info() {
     state_.platinfo.num_total_cores = state_.platinfo.num_clusters * state_.platinfo.num_cores;
     state_.platinfo.num_total_warps = state_.platinfo.num_total_cores * state_.platinfo.num_warps;
     state_.platinfo.num_total_threads = state_.platinfo.num_total_warps * state_.platinfo.num_threads;
+
+    // Check if warps are active
+    WarpSummary_t wsummary;
+    CHECK_ERR(get_warp_summary(wsummary), "Failed to get warp active summary");
+    if (wsummary.allunavail) {
+        log_->warn("No warps are active, skipping further initialization");
+        return RCODE_OK;
+    }
 
     // save curr warp/thread selection
     bool saved = false;
@@ -1145,7 +1148,11 @@ std::string Backend::_get_platform_info_str() const {
     std::string info;
     info += strfmt("  Platform ID   : 0x%08X\n", state_.platinfo.platform_id);
     info += strfmt("  Platform Name : %s\n", state_.platinfo.platform_name.c_str());
-    info += strfmt("  ISA           : %s (%s)\n", rv_isa_string(state_.platinfo.misa).c_str(), rv_isa_string(state_.platinfo.misa, true).c_str());
+    if(state_.platinfo.misa == 0) {
+        info +=        "  ISA           : Unknown\n";
+    } else {
+        info += strfmt("  ISA           : %s (%s)\n", rv_isa_string(state_.platinfo.misa).c_str(), rv_isa_string(state_.platinfo.misa, true).c_str());
+    }
     info += strfmt("  Clusters      : %u\n", state_.platinfo.num_clusters);
     info += strfmt("  Cores/Cluster : %u\n", state_.platinfo.num_cores);
     info += strfmt("  Warps/Core    : %u\n", state_.platinfo.num_warps);

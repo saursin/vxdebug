@@ -42,6 +42,12 @@ public:
     virtual int _recv_buf(std::string &data) = 0;
 
     // ----- Communication API: Blocking Register Read/Write -----
+    // Send a arbitrary command string
+    int send_cmd(const std::string &cmd, std::string &response);
+
+    // Handshake
+    int handshake();
+
     // Read a single register
     int read_reg(const uint32_t addr, uint32_t &data);
 

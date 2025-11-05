@@ -72,9 +72,6 @@ public:
     // Initialization
     int initialize(bool quiet=false);
 
-    // Start execution
-    int start_execution();
-
     //==========================================================================
     // API Methods
     //==========================================================================
@@ -211,16 +208,16 @@ private:
         // -----------------
 
         struct PlatformInfo {
-            uint32_t platform_id;
-            std::string platform_name;
-            uint32_t num_clusters;
-            uint32_t num_cores;
-            uint32_t num_warps;
-            uint32_t num_threads;
-            uint32_t num_total_cores;
-            uint32_t num_total_warps;
-            uint32_t num_total_threads;
-            uint32_t misa;
+            uint32_t platform_id            = 0;
+            std::string platform_name       = "Unknown";
+            uint32_t num_clusters           = 0;
+            uint32_t num_cores              = 0;
+            uint32_t num_warps              = 0;
+            uint32_t num_threads            = 0;
+            uint32_t num_total_cores        = 0;
+            uint32_t num_total_warps        = 0;
+            uint32_t num_total_threads      = 0;
+            uint32_t misa                   = 0;
         } platinfo;
 
     } state_;

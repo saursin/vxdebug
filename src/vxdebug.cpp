@@ -43,7 +43,7 @@ VortexDebugger::VortexDebugger():
     // Register commands using the helper function
     register_command("help",      {"h"},         "Show this help message", &VortexDebugger::cmd_help);
     register_command("exit",      {"quit", "q"}, "Exit the debugger", &VortexDebugger::cmd_exit);
-    register_command("run",       {"r"},         "Run the target program", &VortexDebugger::cmd_run);
+    register_command("init",      {},            "Initialize the target program", &VortexDebugger::cmd_init);
     register_command("transport", {"t"},         "Set backend transport", &VortexDebugger::cmd_transport);
     register_command("source",    {"src"},       "Execute commands from a script file", &VortexDebugger::cmd_source);
     register_command("reset",     {"R"},         "Reset the target system", &VortexDebugger::cmd_reset);
@@ -313,16 +313,16 @@ int VortexDebugger::cmd_exit(const std::vector<std::string>& args) {
     return 0;
 }
 
-int VortexDebugger::cmd_run(const std::vector<std::string>& args) {
-    ArgParse::ArgumentParser parser("run", "Run the target program");
+int VortexDebugger::cmd_init(const std::vector<std::string>& args) {
+    ArgParse::ArgumentParser parser("init", "Initialize the target program");
     // parser.add_argument({"-r", "--reset"}, "Reset target before running", ArgParse::BOOL, "false");
     int rc = parser.parse_args(args);
     if (rc != 0) {return rc;}
 
     // bool reset = parser.get<bool>("reset");
 
-    log_->info("Running target program");
-    rc = backend_->start_execution();
+    log_->info("Initializing target platform...");
+    rc = backend_->initialize();
     if (rc != RCODE_OK) {
         log_->error("Failed to start target execution");
         return rc;
@@ -752,7 +752,7 @@ int VortexDebugger::cmd_reg(const std::vector<std::string>& args) {
 
 int VortexDebugger::cmd_mem(const std::vector<std::string>& args) {
     ArgParse::ArgumentParser parser("mem", "Memory operations");
-    parser.add_argument({"operation"}, "Operation: read(r) or write(w)", ArgParse::STR, "", true, "", {"r", "w", "read", "write"});
+    parser.add_argument({"operation"}, "Operation: read(r) or write(w)", ArgParse::STR, "", true, "", {"r", "w", "read", "write", "loadbin"});
     parser.add_argument({"address"}, "Memory address", ArgParse::STR, "");
     parser.add_argument({"length"}, "Length in bytes (for read)", ArgParse::INT, "4");
     parser.add_argument({"value"}, "Comma-separated list of values to write (for write operations)", ArgParse::STR, "");
@@ -782,6 +782,19 @@ int VortexDebugger::cmd_mem(const std::vector<std::string>& args) {
         }
         CHECK_ERRS(backend_->write_mem(address, mem_data));
         log_->info(strfmt("Wrote %zu bytes to address 0x%08X", mem_data.size(), address));
+    }
+    else if (operation == "loadbin") {
+        uint32_t address = parse_uint(parser.get<std::string>("address"));
+        std::string filepath = parser.get<std::string>("value");
+        std::ifstream bin_file(filepath, std::ios::binary);
+        if (!bin_file.is_open()) {
+            log_->error("Failed to open binary file: " + filepath);
+            return 1;
+        }
+        std::vector<uint8_t> mem_data((std::istreambuf_iterator<char>(bin_file)), std::istreambuf_iterator<char>());
+        bin_file.close();
+        CHECK_ERRS(backend_->write_mem(address, mem_data));
+        log_->info(strfmt("Loaded binary file '%s' (%zu bytes) into memory at address 0x%08X", filepath.c_str(), mem_data.size(), address));
     }
     else {
         log_->error("Invalid operation. See 'help mem' for usage.");

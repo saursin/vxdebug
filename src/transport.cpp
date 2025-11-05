@@ -22,23 +22,67 @@ Transport::~Transport() {
     delete log_;
 }
 
+int Transport::handshake() {
+    log_->debug("Performing handshake with debug server...");
+    int rc = _send_buf("p");
+    if (rc != RCODE_OK) {
+        log_->error("Failed to send handshake message");
+        return rc;
+    }
+
+    std::string rbuf;
+    rc = _recv_buf(rbuf);
+    if (rc != RCODE_OK) {
+        log_->error("Failed to receive handshake response");
+        return rc;
+    }
+
+    if (rbuf != "+P") {
+        log_->error("Invalid handshake response: " + rbuf);
+        return RCODE_ERROR;
+    }
+
+    log_->info("Handshake successful");
+    return RCODE_OK;
+}
+
+int Transport::send_cmd(const std::string &cmd, std::string &response) {
+    int rc = _send_buf(cmd);
+    if (rc != RCODE_OK) {
+        log_->error("Failed to send command: " + cmd);
+        return rc;
+    }
+    rc = _recv_buf(response);
+    if (rc != RCODE_OK) {
+        log_->error("Failed to receive command response for: " + cmd);
+        return rc;
+    }
+    if((response)[0] != '+') {
+        log_->error("Command '" + cmd + "' failed (got NACK)");
+        return RCODE_ERROR;
+    }   
+    return RCODE_OK;
+}
+
 int Transport::read_reg(const uint32_t addr, uint32_t &data) {
     int rc = RCODE_OK;
    
     // Send read command (fmt: "rXXXX")
     std::string sbuf = strfmt("r%04x", addr);
-    log_->debug("TX: " + sbuf);
     rc = _send_buf(sbuf);
     if (rc != RCODE_OK)  return rc;
 
     // Receive response (fmt: "+XXXXXXXX" or "-")
     std::string rbuf;
     rc = _recv_buf(rbuf);
-    log_->debug("RX: " + rbuf);
     if (rc != RCODE_OK) { return rc; }
 
     // Parse response
     if(rbuf[0] == '+') {
+        if (rbuf.length() != 9) {
+            log_->error("Invalid register read response length");
+            return RCODE_ERROR;
+        }
         data = std::strtoul(rbuf.c_str() + 1, nullptr, 16);
     } 
     else if(rbuf[0] == '-') {
@@ -57,14 +101,12 @@ int Transport::write_reg(const uint32_t addr, const uint32_t data) {
 
     // Send write command (fmt: "wXXXX:XXXXXXXX")
     std::string sbuf = strfmt("w%04x:%08x", addr, data);
-    log_->debug("TX: " + sbuf);
     rc = _send_buf(sbuf);
     if (rc != RCODE_OK) return rc;
 
     // Receive response (fmt: "+" or "-")
     std::string rbuf;
     rc = _recv_buf(rbuf);
-    log_->debug("RX: " + rbuf);
     if (rc != RCODE_OK) return rc;
 
     if(rbuf[0] == '+') {
@@ -97,14 +139,12 @@ int Transport::read_regs(const std::vector<uint32_t> &addrs, std::vector<uint32_
         if(i != n - 1)
             sbuf += ",";
     }
-    log_->debug("TX: " + sbuf);
     int rc = _send_buf(sbuf);
     if (rc != RCODE_OK) { return rc; }
 
     // Receive response (fmt: "+XXXXXXXX,XXXXXXXX" or "-")
     std::string rbuf;
     rc = _recv_buf(rbuf);
-    log_->debug("RX: " + rbuf);
     if (rc != RCODE_OK) { return rc; }
 
     // Parse response
@@ -155,7 +195,6 @@ int Transport::write_regs(const std::vector<uint32_t> &addrs, const std::vector<
             sbuf += ",";
     }
 
-    log_->debug("TX: " + sbuf);
     int rc = _send_buf(sbuf);
     if (rc != RCODE_OK) {
         log_->error("Failed to send batch write command");
@@ -169,7 +208,6 @@ int Transport::write_regs(const std::vector<uint32_t> &addrs, const std::vector<
         log_->error("Failed to receive batch write response");
         return RCODE_ERROR;
     }
-    log_->debug("RX: " + rbuf);
 
     if(rbuf[0] == '+') {
         return RCODE_OK;
@@ -239,6 +277,7 @@ int TCPTransport::_send_buf(const std::string &data) {
 
     try {
         client_->send_data(msg.c_str(), msg.size());
+        log_->debug("TX: " + data);
     } catch (const std::exception& e) {
         log_->error("Send failed: " + std::string(e.what()));
         return RCODE_ERROR;
@@ -261,6 +300,7 @@ int TCPTransport::_recv_buf(std::string &out) {
         if (pos != std::string::npos) {
             out = recv_buf_.substr(0, pos);
             recv_buf_.erase(0, pos + 1);
+            log_->debug("RX: " + out);
             return RCODE_OK;
         }
 
