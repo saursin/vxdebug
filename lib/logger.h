@@ -54,6 +54,10 @@ public:
     static void gdebug(const std::string& msg, int threshold = -1);
 
 private:
+    static std::ofstream g_file_;        // Original log file (with colors)
+    static std::ofstream g_clean_file_;  // Clean log file (without colors);
+
+private:
     // Shared global config
     static inline std::string g_prefix_ = "";
     static inline LogLevel g_level_ = LOG_INFO;
@@ -61,7 +65,7 @@ private:
     static inline bool g_color_enabled_ = true;
     
     static inline std::mutex g_mutex_;
-    static inline std::ofstream g_file_;
+    // static inline std::ofstream g_file_;
 
     // Per-instance config
     std::string prefix_;

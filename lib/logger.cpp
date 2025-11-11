@@ -1,5 +1,10 @@
 #include "logger.h"
 #include <map>
+#include <filesystem>
+
+// Static member definitions
+std::ofstream Logger::g_file_;
+std::ofstream Logger::g_clean_file_;
 
 const std::string prefix_clr = ANSI_GRY;
 
@@ -50,16 +55,39 @@ Logger::Logger(const std::string &prefix, const int debug_thr):
 {}
 
 void Logger::set_output_file(const std::string& path) {
+    // Close existing files if open
     if (g_file_.is_open())
         g_file_.close();
-    g_file_.open(path, std::ios::app);
+    if (g_clean_file_.is_open())
+        g_clean_file_.close();
+
+    // Get path components
+    std::filesystem::path log_path(path);
+    auto parent_path = log_path.parent_path();
+    auto stem = log_path.stem();
+    auto ext = log_path.extension();
+    
+    // Create colored log file path
+    auto colored_path = path;
+    
+    // Create clean log file path by inserting "_clean" before extension
+    auto clean_path = (parent_path / (stem.string() + "_clean" + ext.string())).string();
+
+    // Open both files
+    g_file_.open(colored_path, std::ios::app);
     if (!g_file_.is_open())
-        std::cerr << "[Logger] Warning: failed to open log file: " << path << '\n';
+        std::cerr << "[Logger] Warning: failed to open colored log file: " << colored_path << '\n';
+
+    g_clean_file_.open(clean_path, std::ios::app);
+    if (!g_clean_file_.is_open())
+        std::cerr << "[Logger] Warning: failed to open clean log file: " << clean_path << '\n';
 }
 
 void Logger::close_output_file() {
     if (g_file_.is_open())
         g_file_.close();
+    if (g_clean_file_.is_open())
+        g_clean_file_.close();
 }
 
 // === Core logic ===
@@ -82,28 +110,46 @@ void Logger::log_internal(const Logger* self, LogLevel lvl,
     if (!should_print)
         return;
 
-    std::string out;
+    // Create colored output
+    std::string colored_out;
     if (g_color_enabled_) {
         if(!prefix.empty())
-            out += prefix_clr + "(" + prefix + ")" + ANSI_RST + " ";
-        out += tag_clr_tab.at(lvl) + tag_tab.at(lvl) + ANSI_RST;
-        out += msg_clr_tab.at(lvl) + msg + ANSI_RST + "\n";
+            colored_out += prefix_clr + "(" + prefix + ")" + ANSI_RST + " ";
+        colored_out += tag_clr_tab.at(lvl) + tag_tab.at(lvl) + ANSI_RST;
+        colored_out += msg_clr_tab.at(lvl) + msg + ANSI_RST + "\n";
     }
     else {
         if(!prefix.empty())
-            out += "(" + prefix + ") ";
-        out += tag_tab.at(lvl);
-        out += msg + "\n";
+            colored_out += "(" + prefix + ") ";
+        colored_out += tag_tab.at(lvl);
+        colored_out += msg + "\n";
     }
+
+    // Create clean output (always without colors)
+    std::string clean_out;
+    if(!prefix.empty())
+        clean_out += "(" + prefix + ") ";
+    clean_out += tag_tab.at(lvl);
+    clean_out += msg + "\n";
     
     // Thread-safe output
     std::lock_guard<std::mutex> lock(g_mutex_);
     if (g_file_.is_open()) {
-        g_file_ << out;
+        // Write colored output to main log file
+        g_file_ << colored_out;
         g_file_.flush();
+
+        // Write clean output to clean log file
+        g_clean_file_ << clean_out;
+        g_clean_file_.flush();
+
+        // Write to terminal (colored)
+        std::cout << colored_out;
+        std::cout.flush();
     }
     else {
-        std::cout << out;
+        // Just write to terminal if no files are open
+        std::cout << colored_out;
         std::cout.flush();
     }
 }

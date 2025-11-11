@@ -4,3 +4,6 @@ build/
 *.log
 tmp/
 .*_history
+
+.gitignore
+sourceme

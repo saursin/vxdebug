@@ -126,6 +126,7 @@ int VortexDebugger::execute_script(const std::string &filepath) {
         line = preprocess_commandline(line);
         if (line.empty()) continue; // skip blank lines
         printf(ANSI_YLW "%s:%d: %s\n" ANSI_RST, file_basename.c_str(), line_num, line.c_str());
+        log_->info("Script " + file_basename + ":" + std::to_string(line_num) + ": " + line);
         int rc = __execute_line(line);
         if (rc != 0) {
             log_->error(strfmt("Script execution halted due to error at %s:%d", file_basename.c_str(), line_num));
@@ -214,6 +215,9 @@ int VortexDebugger::__execute_line(const std::string &input) {
     std::vector<std::string> toks = tokenize(input, ' ');
     if (toks.empty())
         return 0;
+    
+    // Log the command being executed
+    log_->info("Command: " + input);
     
     // --- Execute ---
     std::string cmd = toks[0];
