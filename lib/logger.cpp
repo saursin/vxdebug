@@ -98,13 +98,21 @@ void Logger::log_internal(const Logger* self, LogLevel lvl,
     
     // Thread-safe output
     std::lock_guard<std::mutex> lock(g_mutex_);
+    
+    // Always write to terminal
+    std::cout << out;
+    std::cout.flush();
+    
+    // Also write to file if open
     if (g_file_.is_open()) {
-        g_file_ << out;
+        std::string file_out;
+        if(!prefix.empty())
+            file_out += "(" + prefix + ") ";
+        file_out += tag_tab.at(lvl);
+        file_out += msg + "\n";
+        
+        g_file_ << file_out;
         g_file_.flush();
-    }
-    else {
-        std::cout << out;
-        std::cout.flush();
     }
 }
 
